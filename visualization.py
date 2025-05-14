@@ -17,9 +17,9 @@ def plot_psd_all_channels(raw, fmin=0, fmax=80, n_fft=2048):
     plt.figure(figsize=(8, 5))
     for ch in range(psd_db.shape[0]):
         plt.plot(freqs, psd_db[ch], color="black", alpha=0.3, linewidth=0.5)
-    plt.axvline(8, linestyle="--", label="8 Hz")
-    plt.axvline(13, linestyle="--", label="13 Hz")
-    plt.axvline(30, linestyle="--", label="30 Hz")
+    # plt.axvline(8, linestyle="--", label="8 Hz")
+    # plt.axvline(13, linestyle="--", label="13 Hz")
+    # plt.axvline(30, linestyle="--", label="30 Hz")
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("PSD (dB)")
     plt.title("EEG: PSD per channel (0–80 Hz)")
@@ -44,9 +44,9 @@ def plot_mean_psd(raw, fmin=0, fmax=80, n_fft=2048):
     plt.fill_between(
         freqs, mean - std, mean + std, color="gray", alpha=0.4, label="±1 std"
     )
-    plt.axvline(8, linestyle="--")
-    plt.axvline(13, linestyle="--")
-    plt.axvline(30, linestyle="--")
+    # plt.axvline(8, linestyle="--")
+    # plt.axvline(13, linestyle="--")
+    # plt.axvline(30, linestyle="--")
     plt.xlabel("Frequency (Hz)")
     plt.ylabel("PSD (dB)")
     plt.title("EEG: Mean PSD ± Std (0–80 Hz)")
@@ -82,6 +82,7 @@ def main():
 
     plot_psd_all_channels(raw, fmin=0, fmax=80)
     plot_mean_psd(raw, fmin=0, fmax=80)
+
 
 if __name__ == "__main__":
     main()
