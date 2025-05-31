@@ -7,7 +7,7 @@ all: .venv
 	. .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt
 
 clean:
-	rm -rf __pycache__ */__pycache__ *.pyc .mypy_cache
+	rm -rf __pycache__ */__pycache__ *.pyc .mypy_cache models/*
 
 fclean: clean
 	rm -rf .venv
