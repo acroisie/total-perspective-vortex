@@ -6,14 +6,18 @@ from mne.datasets import eegbci
 from mne.io import concatenate_raws, read_raw_edf
 
 
-def plot_psd_all_channels(raw, fmin=0, fmax=80, n_fft=2048):
+def compute_psd_db(raw, fmin=0, fmax=80, n_fft=2048):
     psd = raw.compute_psd(
         fmin=fmin, fmax=fmax, method="welch", n_fft=n_fft, verbose=False
     )
     psds = psd.get_data()
     freqs = psd.freqs
     psd_db = 10 * np.log10(psds)
+    return freqs, psd_db
 
+
+def plot_psd_all_channels(raw, fmin=0, fmax=80, n_fft=2048):
+    freqs, psd_db = compute_psd_db(raw, fmin, fmax, n_fft)
     plt.figure(figsize=(8, 5))
     for ch in range(psd_db.shape[0]):
         plt.plot(freqs, psd_db[ch], color="black", alpha=0.3, linewidth=0.5)
@@ -29,13 +33,7 @@ def plot_psd_all_channels(raw, fmin=0, fmax=80, n_fft=2048):
 
 
 def plot_mean_psd(raw, fmin=0, fmax=80, n_fft=2048):
-    psd = raw.compute_psd(
-        fmin=fmin, fmax=fmax, method="welch", n_fft=n_fft, verbose=False
-    )
-    psds = psd.get_data()
-    freqs = psd.freqs
-    psd_db = 10 * np.log10(psds)
-
+    freqs, psd_db = compute_psd_db(raw, fmin, fmax, n_fft)
     mean = psd_db.mean(axis=0)
     std = psd_db.std(axis=0)
 
