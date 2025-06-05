@@ -2,3 +2,4 @@
 models
 files
 __pycache__/
+*.pkl
