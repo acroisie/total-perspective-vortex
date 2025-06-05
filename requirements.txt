@@ -4,3 +4,4 @@ scikit-learn
 mne
 black
 joblib
+psutil
