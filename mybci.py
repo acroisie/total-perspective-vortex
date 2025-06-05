@@ -16,7 +16,7 @@ import logging
 
 # Désactivation des warnings Python
 def disable_all_logs():
-    warnings.filterwarnings('ignore')
+    warnings.filterwarnings("ignore")
     mne.set_log_level('ERROR')
     logging.getLogger('mne').setLevel(logging.ERROR)
     logging.getLogger('mne').propagate = False
@@ -206,12 +206,12 @@ def build_pipeline(n_csp=N_CSP, use_filterbank=True, sfreq=160):
 def collect_all_data(exp: int, subjects=None, use_full_dataset=False):
     """Collect data from all subjects for training a single model (epochs harmonized in time)"""
     if subjects is None:
-        if use_full_dataset:
-            subjects = range(1, 110)
-            print(f"Using full dataset: {len(subjects)} subjects")
-        else:
+        if not use_full_dataset:
             subjects = range(1, 11)
             print(f"Using subset: {len(subjects)} subjects")
+        else:
+            subjects = range(1, 110)
+            print(f"Using full dataset: {len(subjects)} subjects")
 
     all_X, all_y = [], []
     valid_subjects = []
@@ -331,9 +331,9 @@ def train_all_experiments_OBSOLETE(use_full_dataset=False):
     start_time = time.time()
     
     dataset_info = (
-        "full dataset (109 subjects)"
-        if use_full_dataset
-        else "subset (10 subjects)"
+        "subset (10 subjects)"
+        if not use_full_dataset
+        else "full dataset (109 subjects)"
     )
     print(f"Training all 6 experiments on {dataset_info}...")
     accuracies = []
@@ -497,7 +497,7 @@ def main():
         epilog="""
 Examples:
   python mybci.py --data /path/to/data             # Train all 6 models with subject split approach
-  python mybci.py --data /path/to/data --full     # Train all 6 models with subject split on full dataset
+  python mybci.py --data /path/to/data --fast     # Train all 6 models with subject split on reduced dataset (10 subjects)
   python mybci.py 4 14 train                      # Train experiment 4, test on subject 14 (single subject)
   python mybci.py 4 14 predict                    # Predict experiment 4 on subject 14
   python mybci.py 4 14 stream                     # Stream simulation for experiment 4, subject 14
@@ -527,16 +527,9 @@ Examples:
     )
 
     parser.add_argument(
-        "--full",
+        "--fast",
         action="store_true",
-        help="Use full dataset (all 109 subjects) instead of subset",
-    )
-
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=2.0,
-        help="Delay in seconds for stream simulation (default: 2.0)",
+        help="Use a reduced subset (10 subjects) for faster training/evaluation (default: use all subjects)",
     )
 
     args = parser.parse_args()
@@ -553,28 +546,28 @@ Examples:
     if args.experiment is None:
         if DATA_PATH is None:
             print("Error: --data path is required for split training approach")
-            print("Usage: python mybci.py --data /path/to/data [--full]")
+            print("Usage: python mybci.py --data /path/to/data [--fast]")
             return
         
-        if args.full:
-            print("Training all experiments with subject split approach on full dataset...")
+        if args.fast:
+            print("Training all experiments with subject split approach on reduced subset (10 subjects)...")
         else:
-            print("Training all experiments with subject split approach...")
-        train_all_experiments_split(data_path=DATA_PATH, use_full_dataset=args.full)
+            print("Training all experiments with subject split approach on full dataset...")
+        train_all_experiments_split(data_path=DATA_PATH, use_full_dataset=not args.fast)
         return
 
     # Case 2: Only experiment provided (TOUJOURS avec split)
     if args.subject is None:
         if DATA_PATH is None:
             print("Error: --data path is required for split training approach")
-            print("Usage: python mybci.py --experiment exp_id --data /path/to/data [--full]")
+            print("Usage: python mybci.py --experiment exp_id --data /path/to/data [--fast]")
             return
         
-        if args.full:
-            print(f"Training experiment {args.experiment} with subject split approach on full dataset...")
+        if args.fast:
+            print(f"Training experiment {args.experiment} with subject split approach on reduced subset (10 subjects)...")
         else:
-            print(f"Training experiment {args.experiment} with subject split approach...")
-        train_single_experiment_split(args.experiment, data_path=DATA_PATH, use_full_dataset=args.full)
+            print(f"Training experiment {args.experiment} with subject split approach on full dataset...")
+        train_single_experiment_split(args.experiment, data_path=DATA_PATH, use_full_dataset=not args.fast)
         return
 
     # Case 3: Experiment and subject provided
@@ -625,7 +618,12 @@ def train_single_experiment_split(exp: int, data_path=None, use_full_dataset=Fal
     
     data_path = Path(data_path)
     subject_dirs = list_subject_dirs(data_path)
-    print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
+    # Limiter à 10 sujets si use_full_dataset == False (donc mode --fast)
+    if not use_full_dataset:
+        subject_dirs = subject_dirs[:30]
+        print(f"[INFO] Mode rapide (--fast) : {len(subject_dirs)} sujets utilisés.")
+    else:
+        print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
 
     # Split train/test/holdout : 60% / 20% / 20%
     train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
@@ -701,7 +699,12 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
         raise ValueError("data_path doit être spécifié pour le mode multi-sujets.")
     data_path = Path(data_path)
     subject_dirs = list_subject_dirs(data_path)
-    print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
+    # Limiter à 10 sujets si use_full_dataset == False (donc mode --fast)
+    if not use_full_dataset:
+        subject_dirs = subject_dirs[:30]
+        print(f"[INFO] Mode rapide (--fast) : {len(subject_dirs)} sujets utilisés.")
+    else:
+        print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
 
     # Split train/test/holdout : 60% / 20% / 20%
     train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
