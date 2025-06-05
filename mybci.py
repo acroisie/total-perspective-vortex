@@ -59,7 +59,7 @@ N_CSP = 3
 #     "CP3", "CP4" ]
 # N_CSP = 6
 
-
+USE_FILTERBANK = False  # Utiliser FilterBankCSP ou CustomCSP
 
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
@@ -71,6 +71,7 @@ DATA_PATH = None
 from filterbank_csp import FilterBankCSP
 from custom_csp import CustomCSP
 
+from mne.decoding import CSP
 class FilterBankCSPCustom(FilterBankCSP):
     def fit(self, X, y):
         # Assurer que X est en float64 pour éviter les erreurs
@@ -200,13 +201,15 @@ def load_data(exp: int, subj: int):
         return load_data_from_physionet(exp, subj)
 
 
-def build_pipeline(n_csp=N_CSP, use_filterbank=True, sfreq=160):
+def build_pipeline(n_csp=N_CSP, use_filterbank=USE_FILTERBANK, sfreq=160):
     if use_filterbank:
+        print(f"Using FilterBankCSP with n_csp={n_csp}, sfreq={sfreq}")
         return Pipeline([
             ("FBCSP", FilterBankCSPCustom(n_csp=n_csp, sfreq=sfreq)),
             ("LDA", LDA()),
         ])
     else:
+        print(f"Using CustomCSP with n_components={n_csp}")
         return Pipeline([
             ("CSP", CustomCSP(n_components=n_csp, log=True)),
             ("LDA", LDA()),
@@ -254,48 +257,6 @@ def collect_all_data(exp: int, subjects=None, use_full_dataset=False):
 
 
 # -------------------------------------------------------------------------
-
-
-def train_experiment_OBSOLETE(exp: int, use_full_dataset=False):
-    """Train a single model for one experiment using all subjects"""
-    print(f"\n=== Training experiment {exp} ===")
-
-    start_time = time.time()
-    X, y, valid_subjects = collect_all_data(
-        exp, use_full_dataset=use_full_dataset
-    )
-
-    # Cross-validation
-    pipe = build_pipeline()
-    cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=SEED)
-    
-    # Utiliser les paramètres quiet pour reduce la verbosité
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=14)
-
-    print(f"Cross-validation scores: {scores.round(4)}")
-    print(f"cross_val_score: {scores.mean():.4f}")
-
-    # Train final model
-    pipe.fit(X, y)
-
-    # Save model
-    model_path = MODEL_DIR / f"bci_exp{exp}.pkl"
-    joblib.dump(
-        {
-            "model": pipe,
-            "valid_subjects": valid_subjects,
-            "cv_scores": scores,
-            "mean_cv_score": scores.mean(),
-        },
-        model_path,
-    )
-
-    elapsed = time.time() - start_time
-    print(f"Model saved to {model_path}")
-    print(f"Training time: {elapsed:.1f} seconds")
-    return scores.mean()
 
 
 def predict_subject(exp: int, subj: int):
@@ -365,38 +326,6 @@ def predict_subject(exp: int, subj: int):
     print(f"Accuracy: {accuracy:.4f}")
     print(f"Total prediction time: {total_time:.1f}s")
     return accuracy
-
-
-def train_all_experiments_OBSOLETE(use_full_dataset=False):
-    """Train models for all 6 experiments"""
-    start_time = time.time()
-    
-    dataset_info = (
-        "subset (10 subjects)"
-        if not use_full_dataset
-        else "full dataset (109 subjects)"
-    )
-    print(f"Training all 6 experiments on {dataset_info}...")
-    accuracies = []
-
-    for exp in range(6):
-        try:
-            acc = train_experiment_OBSOLETE(exp, use_full_dataset=use_full_dataset)
-            accuracies.append(acc)
-        except Exception as e:
-            print(f"Failed to train experiment {exp}: {e}")
-
-    if accuracies:
-        print(
-            f"\nMean cross-validation accuracy across experiments: {np.mean(accuracies):.4f}"
-        )
-    
-    # Afficher le temps total d'exécution
-    elapsed = time.time() - start_time
-    minutes = int(elapsed // 60)
-    seconds = int(elapsed % 60)
-    print(f"\nTemps total d'exécution: {minutes}:{seconds:02d} (min:ss)")
-
 
 def evaluate_all_experiments():
     """Evaluate all experiments on all subjects (format conforme au sujet)"""
