@@ -2,7 +2,6 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from custom_csp import CustomCSP
 import mne
-from mne.decoding import CSP
 import warnings
 import logging
 import joblib
@@ -43,7 +42,7 @@ class FilterBankCSP(BaseEstimator, TransformerMixin):
         self.csp_list = []
         for fmin, fmax in self.freq_bands:
             X_f = self._bandpass_filter(X, fmin, fmax)
-            csp = CSP(n_components=self.n_csp)
+            csp = CustomCSP(n_components=self.n_csp)
             csp.fit(X_f, y)
             self.csp_list.append(csp)
         return self
