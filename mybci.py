@@ -11,6 +11,25 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from custom_csp import CustomCSP
 from mne.decoding import CSP
+import warnings
+import logging
+
+# Désactivation des warnings Python
+def disable_all_logs():
+    warnings.filterwarnings('ignore')
+    mne.set_log_level('ERROR')
+    logging.getLogger('mne').setLevel(logging.ERROR)
+    logging.getLogger('mne').propagate = False
+    logging.getLogger().setLevel(logging.ERROR)
+    try:
+        joblib_logger = logging.getLogger('joblib')
+        joblib_logger.setLevel(logging.ERROR)
+        joblib_logger.propagate = False
+    except Exception:
+        pass
+
+# Appel dès le début du script
+disable_all_logs()
 
 FMIN, FMAX = 7.0, 30.0
 TMIN, TMAX = 0.0, 4.0
@@ -32,6 +51,27 @@ MODEL_DIR.mkdir(exist_ok=True)
 # Global variable to store data path
 DATA_PATH = None
 
+# Define FilterBankCSPOfficial at module level to avoid pickle issues
+from filterbank_csp import FilterBankCSP
+from mne.decoding import CSP as OfficialCSP
+
+class FilterBankCSPOfficial(FilterBankCSP):
+    def fit(self, X, y):
+        # Assurer que X est en float64 pour éviter les erreurs de MNE
+        X = np.asarray(X, dtype=np.float64)
+        self.csp_list = []
+        for fmin, fmax in self.freq_bands:
+            X_f = self._bandpass_filter(X, fmin, fmax)
+            csp = OfficialCSP(n_components=self.n_csp, log=True)
+            csp.fit(X_f, y)
+            self.csp_list.append(csp)
+        return self
+        
+    def transform(self, X):
+        # Assurer que X est en float64 pour le transform aussi
+        X = np.asarray(X, dtype=np.float64)
+        return super().transform(X)
+
 # -------------------------------------------------------------------------
 
 
@@ -42,12 +82,12 @@ def load_data_from_physionet(exp: int, subj: int):
     raws = [read_raw_edf(f, preload=True, verbose=False) for f in files]
     raw = concatenate_raws(raws)
     eegbci.standardize(raw)
-    raw.set_montage(make_standard_montage("standard_1005"))
+    raw.set_montage(make_standard_montage("standard_1005"), verbose=False)
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
     # Select only C3, C4, Cz channels
     picks = mne.pick_channels(raw.info["ch_names"], include=["C3", "C4", "Cz"])
     raw.pick(picks)
-    events, _ = mne.events_from_annotations(raw)
+    events, _ = mne.events_from_annotations(raw, verbose=False)
     event_id = {"hands": 2, "feet": 3, "left": 1, "right": 2}
     epochs = mne.Epochs(
         raw,
@@ -107,7 +147,7 @@ def load_data_from_files(exp: int, subj: int):
     # Select only C3, C4, Cz channels
     picks = mne.pick_channels(raw.info["ch_names"], include=["C3", "C4", "Cz"])
     raw.pick(picks)
-    events, _ = mne.events_from_annotations(raw)
+    events, _ = mne.events_from_annotations(raw, verbose=False)
 
     # Determine event_id based on experiment type
     if exp in [0, 1, 4]:  # L/R experiments
@@ -149,31 +189,11 @@ def load_data(exp: int, subj: int):
 
 def build_pipeline(n_csp=N_CSP, use_filterbank=True, sfreq=160):
     if use_filterbank:
-        # Utilisation du CSP officiel MNE dans le filterbank
-        from mne.decoding import CSP as OfficialCSP
-        from filterbank_csp import FilterBankCSP
-        class FilterBankCSPOfficial(FilterBankCSP):
-            def fit(self, X, y):
-                # Assurer que X est en float64 pour éviter les erreurs de MNE
-                X = np.asarray(X, dtype=np.float64)
-                self.csp_list = []
-                for fmin, fmax in self.freq_bands:
-                    X_f = self._bandpass_filter(X, fmin, fmax)
-                    csp = OfficialCSP(n_components=self.n_csp, log=True)
-                    csp.fit(X_f, y)
-                    self.csp_list.append(csp)
-                return self
-                
-            def transform(self, X):
-                # Assurer que X est en float64 pour le transform aussi
-                X = np.asarray(X, dtype=np.float64)
-                return super().transform(X)
         return Pipeline([
             ("FBCSP", FilterBankCSPOfficial(n_csp=n_csp, sfreq=sfreq)),
             ("LDA", LDA()),
         ])
     else:
-        from mne.decoding import CSP as OfficialCSP
         return Pipeline([
             ("CSP", OfficialCSP(n_components=n_csp, log=True)),
             ("LDA", LDA()),
@@ -236,9 +256,13 @@ def train_experiment(exp: int, use_full_dataset=False):
     # Cross-validation
     pipe = build_pipeline()
     cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=SEED)
-    scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=12)
+    
+    # Utiliser les paramètres quiet pour reduce la verbosité
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=12)
 
-    print(f"Cross-validation scores: {scores}")
+    print(f"Cross-validation scores: {scores.round(4)}")
     print(f"cross_val_score: {scores.mean():.4f}")
 
     # Train final model
@@ -601,7 +625,7 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
     print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
 
     # Split train/test/holdout
-    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
+    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.2, random_state=42)
     test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=42)
     print(f"[INFO] Train: {len(train_dirs)} sujets, Test: {len(test_dirs)}, Holdout: {len(holdout_dirs)}")
 
@@ -622,7 +646,10 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
             continue
         pipe = build_pipeline()
         try:
-            cv_scores = cross_val_score(pipe, X_train, y_train, cv=5, scoring='accuracy')
+            # Réduire la verbosité pendant le cross-validation
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                cv_scores = cross_val_score(pipe, X_train, y_train, cv=5, scoring='accuracy')
             print(f"[INFO] cross_val_scores={cv_scores}, mean={cv_scores.mean():.3f}")
         except Exception as e:
             print(f"[ERROR] Erreur cross_val pour exp={exp}: {e}")
