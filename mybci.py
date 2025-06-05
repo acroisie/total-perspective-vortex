@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 import numpy as np
 import joblib
+import time
 import mne
 from mne.datasets import eegbci
 from mne.io import read_raw_edf, concatenate_raws
@@ -37,6 +38,7 @@ N_CSP = 3
 SEED = 42
 
 FAST_SUBJECTS = 10  # Nombre de sujets utilisés en mode --fast
+PREDICT_DELAY = 0.1  # Délai en secondes entre chaque époque en mode predict (100ms)
 
 EXPERIMENT_RUNS = {
     0: [3, 7, 11],  # L/R execution
@@ -250,7 +252,6 @@ def collect_all_data(exp: int, subjects=None, use_full_dataset=False):
 
 def train_experiment_OBSOLETE(exp: int, use_full_dataset=False):
     """Train a single model for one experiment using all subjects"""
-    import time
     print(f"\n=== Training experiment {exp} ===")
 
     start_time = time.time()
@@ -292,17 +293,40 @@ def train_experiment_OBSOLETE(exp: int, use_full_dataset=False):
 
 
 def predict_subject(exp: int, subj: int):
-    """Predict on a specific subject using the trained model"""
-    model_path = MODEL_DIR / f"bci_exp{exp}.pkl"
-
-    if not model_path.exists():
+    """Predict on a specific subject using the trained model (subject-specific first, then global)"""
+    # Try subject-specific model first
+    subject_model_path = MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl"
+    global_model_path = MODEL_DIR / f"bci_exp{exp}.pkl"
+    split_model_path = MODEL_DIR / f"bci_exp{exp}_split.pkl"
+    
+    model_path = None
+    model_type = None
+    
+    if subject_model_path.exists():
+        model_path = subject_model_path
+        model_type = "subject-specific"
+    elif global_model_path.exists():
+        model_path = global_model_path
+        model_type = "global"
+    elif split_model_path.exists():
+        model_path = split_model_path
+        model_type = "split"
+    else:
         raise FileNotFoundError(
-            f"Model for experiment {exp} not found. Train first."
+            f"No model found for experiment {exp} and subject {subj}. "
+            f"Looked for:\n- Subject-specific: {subject_model_path}\n- Global: {global_model_path}\n- Split: {split_model_path}\n"
+            f"Train first with: python mybci.py {exp} {subj} train"
         )
+
+    print(f"Using {model_type} model: {model_path}")
 
     # Load model
     data = joblib.load(model_path)
-    pipe = data["model"]
+    if isinstance(data, dict) and "model" in data:
+        pipe = data["model"]
+    else:
+        # For compatibility with older model files
+        pipe = data
 
     # Load subject data
     X, y = load_data(exp, subj)
@@ -316,20 +340,29 @@ def predict_subject(exp: int, subj: int):
 
     print(f"epoch nb: [prediction] [truth] equal?")
     correct = 0
+    start_time = time.time()
+    
     for i, (pred, truth) in enumerate(zip(predictions_mapped, y_mapped)):
+        # Add delay between epochs (except for the first one)
+        if i > 0:
+            time.sleep(PREDICT_DELAY)
+        
         is_correct = pred == truth
         if is_correct:
             correct += 1
-        print(f"epoch {i:02d}: [{pred}] [{truth}] {is_correct}")
+        
+        elapsed = time.time() - start_time
+        print(f"epoch {i:02d}: [{pred}] [{truth}] {is_correct} (t={elapsed:.1f}s)")
 
     accuracy = correct / len(y)
+    total_time = time.time() - start_time
     print(f"Accuracy: {accuracy:.4f}")
+    print(f"Total prediction time: {total_time:.1f}s")
     return accuracy
 
 
 def train_all_experiments_OBSOLETE(use_full_dataset=False):
     """Train models for all 6 experiments"""
-    import time
     start_time = time.time()
     
     dataset_info = (
@@ -361,7 +394,6 @@ def train_all_experiments_OBSOLETE(use_full_dataset=False):
 
 def evaluate_all_experiments():
     """Evaluate all experiments on all subjects (format conforme au sujet)"""
-    import time
     start_time = time.time()
     
     print("Evaluating all experiments on all subjects...")
@@ -433,18 +465,39 @@ def predict_subject_stream(exp: int, subj: int, delay=2.0):
     Predict on a specific subject with stream simulation (playback with delay).
     Simulates real-time BCI by introducing a delay between epochs.
     """
-    import time
 
-    model_path = MODEL_DIR / f"bci_exp{exp}.pkl"
-
-    if not model_path.exists():
+    # Try subject-specific model first, then global models
+    subject_model_path = MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl"
+    global_model_path = MODEL_DIR / f"bci_exp{exp}.pkl"
+    split_model_path = MODEL_DIR / f"bci_exp{exp}_split.pkl"
+    
+    model_path = None
+    model_type = None
+    
+    if subject_model_path.exists():
+        model_path = subject_model_path
+        model_type = "subject-specific"
+    elif global_model_path.exists():
+        model_path = global_model_path
+        model_type = "global"
+    elif split_model_path.exists():
+        model_path = split_model_path
+        model_type = "split"
+    else:
         raise FileNotFoundError(
-            f"Model for experiment {exp} not found. Train first."
+            f"No model found for experiment {exp} and subject {subj}. "
+            f"Train first with: python mybci.py {exp} {subj} train"
         )
+
+    print(f"Using {model_type} model: {model_path}")
 
     # Load model
     data = joblib.load(model_path)
-    pipe = data["model"]
+    if isinstance(data, dict) and "model" in data:
+        pipe = data["model"]
+    else:
+        # For compatibility with older model files
+        pipe = data
 
     # Load subject data
     X, y = load_data(exp, subj)
@@ -578,17 +631,34 @@ Examples:
         return
 
     if args.mode == "train":
-        # For compatibility: train on single subject and test immediately
+        # Train on single subject and save subject-specific model
         print(
             f"Training experiment {args.experiment} on subject {args.subject}..."
         )
         try:
             X, y = load_data(args.experiment, args.subject)
             pipe = build_pipeline()
-            cv = StratifiedKFold(n_splits=10, shuffle= True, random_state=SEED)
+            cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=SEED)
             scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=14)
             print(scores.round(4))
             print(f"cross_val_score: {scores.mean():.4f}")
+            
+            # Train final model on all data and save it
+            pipe.fit(X, y)
+            
+            # Save subject-specific model with explicit naming
+            model_path = MODEL_DIR / f"bci_exp{args.experiment}_subj{args.subject:03d}.pkl"
+            joblib.dump({
+                "model": pipe,
+                "experiment": args.experiment,
+                "subject": args.subject,
+                "cv_scores": scores,
+                "mean_cv_score": scores.mean(),
+                "n_epochs": len(X),
+                "data_shape": X.shape
+            }, model_path)
+            print(f"Model saved to {model_path}")
+            
         except Exception as e:
             print(f"Error: {e}")
 
@@ -611,7 +681,6 @@ def train_single_experiment_split(exp: int, data_path=None, use_full_dataset=Fal
     """
     Entraîne une seule expérience avec l'approche de split multi-sujets.
     """
-    import time
     from sklearn.model_selection import train_test_split
     from utils_multi_subject import list_subject_dirs, aggregate_multi_subject_data
 
@@ -666,7 +735,7 @@ def train_single_experiment_split(exp: int, data_path=None, use_full_dataset=Fal
     print(f"[INFO] Test accuracy={test_acc:.3f}")
     
     # Sauvegarde du modèle
-    model_filename = MODEL_DIR / f"bci_exp{exp}_split.pkl"
+    model_filename = MODEL_DIR / f"bci_exp{exp}.pkl"
     joblib.dump({
         "model": pipe,
         "cv_scores": cv_scores,
@@ -693,7 +762,6 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
     """
     Nouvelle version : split multi-sujets (train/test/holdout), aggregation, entraînement, validation, test, sauvegarde, reporting.
     """
-    import time
     from sklearn.model_selection import train_test_split
     from utils_multi_subject import list_subject_dirs, aggregate_multi_subject_data
 
@@ -743,7 +811,7 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
         print(f"[INFO] Test accuracy={test_acc:.3f}")
         models[exp] = pipe
         results[exp] = {"cv_scores": cv_scores, "test_acc": test_acc}
-        model_filename = MODEL_DIR / f"bci_exp{exp}_split.pkl"
+        model_filename = MODEL_DIR / f"bci_exp{exp}.pkl"
         joblib.dump(pipe, model_filename)
         print(f"[INFO] Modèle sauvegardé => {model_filename}")
     # Holdout
