@@ -5,3 +5,4 @@ mne
 black
 joblib
 psutil
+scipy
