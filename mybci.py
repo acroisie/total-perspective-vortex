@@ -49,7 +49,7 @@ EXPERIMENT_RUNS = {
 }
 
 # Constante pour les canaux EEG utilisés (zones motrices étendues)
-# Fast : 0.66 -- 2min45 -- OK
+# # Fast : 0.66 -- 2min45 -- OK
 EEG_CHANNELS = ["C3", "C4", "Cz"]
 N_CSP = 3
 
@@ -59,7 +59,7 @@ N_CSP = 3
 #     "CP3", "CP4" ]
 # N_CSP = 6
 
-USE_FILTERBANK = False  # Utiliser FilterBankCSP ou CustomCSP
+USE_FILTERBANK = True  # Utiliser FilterBankCSP ou CustomCSP
 
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
