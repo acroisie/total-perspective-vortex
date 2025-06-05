@@ -31,8 +31,8 @@ def disable_all_logs():
 # Appel dès le début du script
 disable_all_logs()
 
-FMIN, FMAX = 7.0, 30.0
-TMIN, TMAX = 0.0, 4.0
+FMIN, FMAX = 8, 32.0
+TMIN, TMAX = 0.7, 3.9
 N_CSP = 3
 SEED = 42
 
@@ -74,6 +74,13 @@ class FilterBankCSPOfficial(FilterBankCSP):
 
 # -------------------------------------------------------------------------
 
+# Constante pour les canaux EEG utilisés (zones motrices étendues)
+# Sélection élargie pour couvrir les régions motrices (gyrus précentral, postcentral, etc.)
+EEG_CHANNELS = [
+    "C3", "C4", "Cz",      # classiques
+    "FC3", "FC4",          # fronto-centraux (zone motrice supplémentaire)
+    "CP3", "CP4"           # centro-pariétaux (zone motrice supplémentaire)
+]
 
 def load_data_from_physionet(exp: int, subj: int):
     """Load data from PhysioNet using MNE's eegbci dataset"""
@@ -85,7 +92,7 @@ def load_data_from_physionet(exp: int, subj: int):
     raw.set_montage(make_standard_montage("standard_1005"), verbose=False)
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
     # Select only C3, C4, Cz channels
-    picks = mne.pick_channels(raw.info["ch_names"], include=["C3", "C4", "Cz"])
+    picks = mne.pick_channels(raw.info["ch_names"], include=EEG_CHANNELS)
     raw.pick(picks)
     events, _ = mne.events_from_annotations(raw, verbose=False)
     event_id = {"hands": 2, "feet": 3, "left": 1, "right": 2}
@@ -145,7 +152,7 @@ def load_data_from_files(exp: int, subj: int):
     raw.set_montage(make_standard_montage("standard_1005"))
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
     # Select only C3, C4, Cz channels
-    picks = mne.pick_channels(raw.info["ch_names"], include=["C3", "C4", "Cz"])
+    picks = mne.pick_channels(raw.info["ch_names"], include=EEG_CHANNELS)
     raw.pick(picks)
     events, _ = mne.events_from_annotations(raw, verbose=False)
 
@@ -260,7 +267,7 @@ def train_experiment_OBSOLETE(exp: int, use_full_dataset=False):
     # Utiliser les paramètres quiet pour reduce la verbosité
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=12)
+        scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=14)
 
     print(f"Cross-validation scores: {scores.round(4)}")
     print(f"cross_val_score: {scores.mean():.4f}")
@@ -588,7 +595,7 @@ Examples:
             X, y = load_data(args.experiment, args.subject)
             pipe = build_pipeline()
             cv = StratifiedKFold(n_splits=10, shuffle= True, random_state=SEED)
-            scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=12)
+            scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=14)
             print(scores.round(4))
             print(f"cross_val_score: {scores.mean():.4f}")
         except Exception as e:
@@ -624,8 +631,8 @@ def train_single_experiment_split(exp: int, data_path=None, use_full_dataset=Fal
     subject_dirs = list_subject_dirs(data_path)
     print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
 
-    # Split train/test/holdout
-    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.2, random_state=42)
+    # Split train/test/holdout : 60% / 20% / 20%
+    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
     test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=42)
     print(f"[INFO] Train: {len(train_dirs)} sujets, Test: {len(test_dirs)}, Holdout: {len(holdout_dirs)}")
 
@@ -700,8 +707,8 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
     subject_dirs = list_subject_dirs(data_path)
     print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
 
-    # Split train/test/holdout
-    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.2, random_state=42)
+    # Split train/test/holdout : 60% / 20% / 20%
+    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
     test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=42)
     print(f"[INFO] Train: {len(train_dirs)} sujets, Test: {len(test_dirs)}, Holdout: {len(holdout_dirs)}")
 
