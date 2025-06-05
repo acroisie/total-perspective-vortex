@@ -3,219 +3,291 @@ import argparse, logging, time, warnings
 from pathlib import Path
 
 import joblib
-import mne
 import numpy as np
-from mne.channels import make_standard_montage
+import mne
 from mne.datasets import eegbci
-from mne.io import concatenate_raws, read_raw_edf
+from mne.channels import make_standard_montage
+from mne.io import read_raw_edf, concatenate_raws
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
 
-from custom_csp import CustomCSP
 from filterbank_csp import FilterBankCSP
+from custom_csp import CustomCSP
 
+# ────────────────── mute the spam ──────────────────
+warnings.filterwarnings("ignore")
+for mod in ("mne", "joblib"):
+    logging.getLogger(mod).setLevel(logging.ERROR)
+    logging.getLogger(mod).propagate = False
+mne.set_log_level("ERROR")
+
+# ────────────────── constants ──────────────────
+FMIN, FMAX = 8.0, 32.0
+TMIN, TMAX = 0.7, 3.9
 SEED = 42
-FREQ = (8, 32)
-WIN = (0.7, 3.9)
-EEG_CH = ["C3", "C4", "Cz"]
-FAST = 10
+FAST_SUBJECTS = 10
+PREDICT_DELAY = 0.1
+EEG_CHANNELS = ["C3", "C4", "Cz"]  # keep it simple
+N_CSP = 3
+USE_FILTERBANK = True
 MODEL_DIR = Path("models"); MODEL_DIR.mkdir(exist_ok=True)
 
-RUNS = {
-    0: [3, 7, 11],
-    1: [4, 8, 12],
-    2: [5, 9, 13],
-    3: [6, 10, 14],
-    4: [3, 4, 7, 8, 11, 12],
-    5: [5, 6, 9, 10, 13, 14],
+EXPERIMENT_RUNS = {
+    0: [3, 7, 11], 1: [4, 8, 12], 2: [5, 9, 13], 3: [6, 10, 14],
+    4: [3, 4, 7, 8, 11, 12], 5: [5, 6, 9, 10, 13, 14],
 }
 
-# mute lib spam
-warnings.filterwarnings("ignore")
-mne.set_log_level("ERROR")
-for n in ("mne", "joblib", ""):
-    logging.getLogger(n).setLevel(logging.ERROR)
-
-
+# ────────────────── CSP wrapper ──────────────────
 class FBCSP(FilterBankCSP):
-    """Patch pour forcer float64"""
+    """Same API, just makes sure dtype is float64."""
 
     def fit(self, X, y):
-        X = np.asarray(X, np.float64)
+        X = np.asarray(X, dtype=np.float64)
         self.csp_list = []
-        for lo, hi in self.freq_bands:
-            Xf = self._bandpass_filter(X, lo, hi)
-            self.csp_list.append(CustomCSP(n_components=self.n_csp, log=True).fit(Xf, y))
+        for fmin, fmax in self.freq_bands:
+            X_f = self._bandpass_filter(X, fmin, fmax)
+            csp = CustomCSP(n_components=self.n_csp, log=True)
+            csp.fit(X_f, y)
+            self.csp_list.append(csp)
         return self
 
     def transform(self, X):
-        return super().transform(np.asarray(X, np.float64))
+        return super().transform(np.asarray(X, dtype=np.float64))
 
 
-# ---------- data ---------- #
+def make_pipe():
+    if USE_FILTERBANK:
+        # print(f"Using FilterBankCSP with n_csp={N_CSP}, sfreq=160")
+        return Pipeline([("FBCSP", FBCSP(n_csp=N_CSP, sfreq=160)), ("LDA", LDA())])
+    print(f"Using CustomCSP with n_components={N_CSP}")
+    return Pipeline([("CSP", CustomCSP(n_components=N_CSP, log=True)), ("LDA", LDA())])
 
-def _get_raw(files):
-    raws = [read_raw_edf(f, preload=True, verbose=False) for f in files]
-    raw = concatenate_raws(raws)
+# ────────────────── data loaders ──────────────────
+
+def _raw_from_physionet(exp: int, subj: int):
+    files = eegbci.load_data(subj, EXPERIMENT_RUNS[exp], verbose=False)
+    return concatenate_raws([read_raw_edf(f, preload=True, verbose=False) for f in files])
+
+
+def _raw_from_files(exp: int, subj: int, root: Path):
+    runs = EXPERIMENT_RUNS[exp]
+    p = root / f"S{subj:03d}"
+    files = [p / f"S{subj:03d}R{r:02d}.edf" for r in runs]
+    files = [str(f) for f in files if f.exists()]
+    if not files:
+        raise FileNotFoundError(f"Missing EDF for S{subj:03d}, exp {exp}")
+    return concatenate_raws([read_raw_edf(f, preload=True, verbose=False) for f in files])
+
+
+def _prep_raw(raw):
     eegbci.standardize(raw)
     raw.set_montage(make_standard_montage("standard_1005"), verbose=False)
-    raw.filter(*FREQ, fir_design="firwin", verbose=False)
-    raw.pick(mne.pick_channels(raw.info["ch_names"], include=EEG_CH))
+    raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
+    raw.pick(mne.pick_channels(raw.info["ch_names"], include=EEG_CHANNELS))
     return raw
 
 
-def load(exp: int, subj: int, data_dir: Path | None = None):
-    """Retourne X, y."""
-    if data_dir:
-        files = [
-            str(data_dir / f"S{subj:03d}" / f"S{subj:03d}R{r:02d}.edf")
-            for r in RUNS[exp]
-            if (data_dir / f"S{subj:03d}" / f"S{subj:03d}R{r:02d}.edf").exists()
-        ]
-        if not files:
-            raise FileNotFoundError(f"pas de fichier EDF pour S{subj:03d}")
-    else:
-        files = eegbci.load_data(subj, RUNS[exp], verbose=False)
-    raw = _get_raw(files)
+def load_data(exp: int, subj: int, data_dir: Path | None = None):
+    raw = _raw_from_files(exp, subj, data_dir) if data_dir else _raw_from_physionet(exp, subj)
+    raw = _prep_raw(raw)
     events, _ = mne.events_from_annotations(raw, verbose=False)
-    event_id = {"left": 1, "right": 2} if exp in (0, 1, 4) else {"hands": 2, "feet": 3}
-    epochs = mne.Epochs(
-        raw,
-        events,
-        event_id,
-        *WIN,
-        baseline=None,
-        detrend=1,
-        preload=True,
-        picks="eeg",
-        verbose=False,
-    )
+
+    if exp in {0, 1, 4}:  # left/right
+        event_id = {"left": 1, "right": 2}
+    else:  # hands/feet
+        event_id = {"hands": 2, "feet": 3}
+
+    epochs = mne.Epochs(raw, events, event_id, TMIN, TMAX, baseline=None,
+                        detrend=1, preload=True, verbose=False, picks="eeg")
     X = epochs.get_data().astype(np.float64)
     y = (epochs.events[:, 2] % 2).astype(int)
-    return X, y
+    min_len = min(X.shape[2], *(e.shape[2] for e in [X]))
+    return X[:, :, :min_len], y
 
+# ────────────────── helpers ──────────────────
 
-# ---------- model ---------- #
-
-def make_pipe(n_csp=3, fb=True, sfreq=160):
-    step = ("FBCSP", FBCSP(n_csp=n_csp, sfreq=sfreq)) if fb else ("CSP", CustomCSP(n_components=n_csp, log=True))
-    return Pipeline([step, ("LDA", LDA())])
-
-
-# ---------- helpers ---------- #
-
-def _aggregate(dirs, exp, data_dir):
-    X_all, y_all = [], []
-    lens = []
-    valids = []
-    for d in dirs:
-        s = int(d.name[1:])
-        try:
-            X, y = load(exp, s, data_dir)
-            X_all.append(X)
-            y_all.append(y)
-            lens.append(X.shape[2])
-            valids.append(s)
-        except Exception:
-            pass
-    if not X_all:
-        raise ValueError("aucune donnée")
-    L = min(lens)
-    X_all = [x[:, :, :L] for x in X_all]
-    return np.concatenate(X_all), np.concatenate(y_all), valids
-
-
-# ---------- train ---------- #
-
-def train_split(exp: int, data_dir: Path, full=False):
-    dirs = sorted([d for d in data_dir.iterdir() if d.is_dir() and d.name.startswith("S")])
-    if not full:
-        dirs = dirs[:FAST]
-    tr, tmp = train_test_split(dirs, test_size=0.4, random_state=SEED)
-    te, ho = train_test_split(tmp, test_size=0.5, random_state=SEED)
-
-    Xtr, ytr, _ = _aggregate(tr, exp, data_dir)
-    Xte, yte, _ = _aggregate(te, exp, data_dir)
-
-    pipe = make_pipe()
-    cv = cross_val_score(pipe, Xtr, ytr, cv=5)
-    pipe.fit(Xtr, ytr)
-    acc = pipe.score(Xte, yte)
-
-    joblib.dump({"model": pipe, "cv": cv, "test": acc}, MODEL_DIR / f"bci_exp{exp}.pkl")
-    print(f"exp{exp} ▶ test={acc:.3f} cv={cv.mean():.3f}")
-
-    try:
-        Xh, yh, _ = _aggregate(ho, exp, data_dir)
-        print(f"hold={pipe.score(Xh, yh):.3f}")
-    except Exception:
-        pass
-
-
-# ---------- predict ---------- #
-
-def _find_model(exp, subj):
-    cands = [
-        MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl",
-        MODEL_DIR / f"bci_exp{exp}.pkl",
-        MODEL_DIR / f"bci_exp{exp}_split.pkl",
-    ]
-    for p in cands:
+def _pick_model(exp: int, subj: int | None = None):
+    cands = [MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl" if subj else None,
+             MODEL_DIR / f"bci_exp{exp}.pkl",
+             MODEL_DIR / f"bci_exp{exp}_split.pkl"]
+    for p in filter(None, cands):
         if p.exists():
             return p
-    raise FileNotFoundError("aucun modèle")
+    raise FileNotFoundError("Model not found; train first")
 
 
-def predict(exp: int, subj: int, data: Path | None = None, stream=False, delay=0.1):
-    mdl = joblib.load(_find_model(exp, subj))
-    pipe = mdl["model"] if isinstance(mdl, dict) else mdl
-    X, y = load(exp, subj, data)
-    ok, t0 = 0, time.time()
+def _load_pipe(path: Path):
+    data = joblib.load(path)
+    return data["model"] if isinstance(data, dict) and "model" in data else data
+
+# ────────────────── core actions ──────────────────
+
+def predict_subject(exp: int, subj: int, data_dir: Path | None = None, playback: bool = False):
+    model_path = _pick_model(exp, subj)
+    pipe = _load_pipe(model_path)
+    X, y = load_data(exp, subj, data_dir)
+    if playback:
+        import time
+        start = time.time(); ok = 0
+        print(f"epoch nb: [prediction] [truth] equal?")
+        for i, (e, t) in enumerate(zip(X, y)):
+            time.sleep(0.01)
+            pred = pipe.predict(e[None])[0]
+            ok += pred == t
+            print(f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)")
+        print(f"Accuracy: {ok/len(y):.4f}")
+    else:
+        preds = pipe.predict(X)
+        report(preds, y)
+
+
+def stream_subject(exp: int, subj: int, delay: float = 2.0, data_dir: Path | None = None):
+    model_path = _pick_model(exp, subj)
+    pipe = _load_pipe(model_path)
+    X, y = load_data(exp, subj, data_dir)
+    start = time.time(); ok = 0
+    print(f"epoch nb: [prediction] [truth] equal?")
     for i, (e, t) in enumerate(zip(X, y)):
-        if stream and i:
-            time.sleep(delay)
-        p = pipe.predict(e.reshape(1, *e.shape))[0]
-        ok += p == t
-        print(f"{i:02d}: [{p+1}] [{t+1}] {p == t}")
-    print(f"acc={ok/len(y):.3f} in {time.time()-t0:.1f}s")
+        if i: time.sleep(delay)
+        else: time.sleep(0.06)
+        pred = pipe.predict(e[None])[0]
+        ok += pred == t
+        print(f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)")
+    print(f"Accuracy: {ok/len(y):.4f}")
 
 
-# ---------- CLI ---------- #
+def report(preds, truth):
+    mapped_pred, mapped_truth = preds + 1, truth + 1
+    ok = mapped_pred == mapped_truth
+    for i, (p, t, c) in enumerate(zip(mapped_pred, mapped_truth, ok)):
+        print(f"epoch {i:02d}: [{p}] [{t}] {c}")
+    print(f"Accuracy: {ok.mean():.4f}")
+
+# ────────────────── training ──────────────────
+
+def _cv(pipe, X, y):
+    cv = StratifiedKFold(10, shuffle=True, random_state=SEED)
+    scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=-1)
+    print(scores.round(4))
+    print(f"cross_val_score: {scores.mean():.4f}")
+    return scores
+
+
+def train_subject(exp: int, subj: int, data_dir: Path | None = None):
+    X, y = load_data(exp, subj, data_dir)
+    pipe = make_pipe()
+    scores = _cv(pipe, X, y)
+    pipe.fit(X, y)
+    model_path = MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl"
+    joblib.dump({"model": pipe, "cv_scores": scores}, model_path)
+    print(f"Model saved to {model_path}")
+
+# Multi‑subject split (train/test/holdout)
+
+def _aggregate(subject_dirs, exp, data_dir):
+    from utils_multi_subject import aggregate_multi_subject_data
+    return aggregate_multi_subject_data(subject_dirs, exp, lambda e, s: load_data(e, s, data_dir))
+
+
+def train_split(exp: int | None, data_dir: Path, full: bool):
+    from utils_multi_subject import list_subject_dirs
+    import time
+    start_time = time.time()
+    subs = list_subject_dirs(data_dir)
+    if not full:
+        subs = subs[:FAST_SUBJECTS]
+        print(f"[INFO] Mode --fast : {len(subs)} subjects")
+    else:
+        print(f"[INFO] {len(subs)} subjects found")
+
+    train_dirs, tmp_dirs = train_test_split(subs, test_size=0.4, random_state=SEED)
+    test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=SEED)
+    print(f"[INFO] Train: {len(train_dirs)} Test: {len(test_dirs)} Holdout: {len(holdout_dirs)}")
+
+    exps = range(6) if exp is None else [exp]
+    for e in exps:
+        print(f"\n[INFO] ==== Exp {e} ====")
+        try:
+            X_tr, y_tr, _ = _aggregate(train_dirs, e, data_dir)
+            X_te, y_te, _ = _aggregate(test_dirs, e, data_dir)
+        except Exception as err:
+            print(f"[WARN] Skip exp {e}: {err}"); continue
+        if len(np.unique(y_tr)) < 2:
+            print(f"[WARN] Exp {e} has one class only, skip"); continue
+        pipe = make_pipe()
+        cv_scores = cross_val_score(pipe, X_tr, y_tr, cv=5, scoring="accuracy")
+        print(f"[INFO] cv_scores: {cv_scores.round(4)}")
+        print(f"[INFO] cv mean={cv_scores.mean():.3f}")
+        pipe.fit(X_tr, y_tr)
+        test_acc = pipe.score(X_te, y_te)
+        print(f"[INFO] Test acc={test_acc:.3f}")
+        model_path = MODEL_DIR / f"bci_exp{e}.pkl"
+        joblib.dump({"model": pipe, "cv_scores": cv_scores, "test_acc": test_acc}, model_path)
+        print(f"[INFO] Saved => {model_path}")
+    # Holdout tests après entraînement
+    holdout_accs = []
+    for e in exps:
+        try:
+            from joblib import load
+            model_path = MODEL_DIR / f"bci_exp{e}.pkl"
+            pipe = load(model_path)["model"]
+            X_ho, y_ho, _ = _aggregate(holdout_dirs, e, data_dir)
+            hold_acc = pipe.score(X_ho, y_ho)
+            holdout_accs.append((e, hold_acc))
+            print(f"[INFO] Holdout acc exp {e}: {hold_acc:.3f}")
+        except Exception as err:
+            print(f"[INFO] No holdout for exp {e}: {err}")
+    # Résumé holdout
+    if holdout_accs:
+        print("\n[INFO] Holdout accuracies by experiment:")
+        for e, acc in holdout_accs:
+            print(f"  Exp {e}: {acc:.3f}")
+        mean_acc = np.mean([acc for _, acc in holdout_accs])
+        print(f"[INFO] Holdout mean accuracy: {mean_acc:.3f}")
+    else:
+        print("[INFO] No holdout accuracies computed.")
+    elapsed = time.time() - start_time
+    print(f"[INFO] Total execution time: {elapsed:.1f} seconds")
+
+# ────────────────── CLI ──────────────────
 
 def main():
-    pa = argparse.ArgumentParser(description="BCI MI – refacto")
-    pa.add_argument("exp", type=int, nargs="?", help="exp 0‑5")
-    pa.add_argument("subj", type=int, nargs="?", help="subject 1‑109")
-    pa.add_argument("mode", choices=["train", "predict", "stream"], nargs="?")
-    pa.add_argument("--data", type=Path)
-    pa.add_argument("--fast", action="store_true")
-    args = pa.parse_args()
+    ap = argparse.ArgumentParser("Total Perspective Vortex – BCI")
+    ap.add_argument("experiment", type=int, nargs="?", help="Exp id (0‑5)")
+    ap.add_argument("subject", type=int, nargs="?", help="Subject id (1‑109)")
+    ap.add_argument("mode", choices=["train", "predict", "stream"], nargs="?")
+    ap.add_argument("--data", type=Path, help="Local data root (S001/, ...)")
+    ap.add_argument("--fast", action="store_true", help="Use 10 subjects only")
+    args = ap.parse_args()
 
-    if args.exp is None:
+    if args.data and not args.data.exists():
+        ap.error(f"Data dir {args.data} not found")
+
+    # 1) train all / selected experiments (split)
+    if args.experiment is None:
         if not args.data:
-            return pa.error("--data obligatoire pour l'entraînement global")
-        for e in range(6):
-            train_split(e, args.data, full=not args.fast)
+            ap.error("--data required for split training")
+        train_split(None, args.data, not args.fast)
         return
 
-    if args.subj is None:
+    # 2) train split for one experiment
+    if args.subject is None:
         if not args.data:
-            return pa.error("--data requis pour exp seule")
-        train_split(args.exp, args.data, full=not args.fast)
+            ap.error("--data required for split training")
+        train_split(args.experiment, args.data, not args.fast)
         return
+
+    # 3) single subject actions
+    if args.mode is None:
+        ap.error("Need a mode (train/predict/stream)")
 
     if args.mode == "train":
-        X, y = load(args.exp, args.subj, args.data)
-        pipe = make_pipe()
-        cv = cross_val_score(pipe, X, y, cv=StratifiedKFold(10, shuffle=True, random_state=SEED))
-        pipe.fit(X, y)
-        joblib.dump({"model": pipe, "cv": cv}, MODEL_DIR / f"bci_exp{args.exp}_subj{args.subj:03d}.pkl")
-        print(f"cv={cv.mean():.3f}")
+        train_subject(args.experiment, args.subject, args.data)
     elif args.mode == "predict":
-        predict(args.exp, args.subj, args.data)
+        predict_subject(args.experiment, args.subject, args.data, playback=True)
     else:
-        predict(args.exp, args.subj, args.data, stream=True)
+        stream_subject(args.experiment, args.subject, data_dir=args.data)
 
 
 if __name__ == "__main__":
