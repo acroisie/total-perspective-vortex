@@ -11,7 +11,6 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from custom_csp import CustomCSP
-from mne.decoding import CSP
 import warnings
 import logging
 
@@ -34,11 +33,11 @@ disable_all_logs()
 
 FMIN, FMAX = 8, 32.0
 TMIN, TMAX = 0.7, 3.9
-N_CSP = 3
 SEED = 42
 
 FAST_SUBJECTS = 10  # Nombre de sujets utilisés en mode --fast
 PREDICT_DELAY = 0.1  # Délai en secondes entre chaque époque en mode predict (100ms)
+
 
 EXPERIMENT_RUNS = {
     0: [3, 7, 11],  # L/R execution
@@ -48,6 +47,19 @@ EXPERIMENT_RUNS = {
     4: [3, 4, 7, 8, 11, 12],  # L/R mixed (exec + imag)
     5: [5, 6, 9, 10, 13, 14],  # H/F mixed (exec + imag)
 }
+
+# Constante pour les canaux EEG utilisés (zones motrices étendues)
+# Fast : 0.66 -- 2min45 -- OK
+EEG_CHANNELS = ["C3", "C4", "Cz"]
+N_CSP = 3
+
+# EEG_CHANNELS = [
+#     "C3", "C4", "Cz",     
+#     "FC3", "FC4", 
+#     "CP3", "CP4" ]
+# N_CSP = 6
+
+
 
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
@@ -76,13 +88,7 @@ class FilterBankCSPCustom(FilterBankCSP):
 
 # -------------------------------------------------------------------------
 
-# Constante pour les canaux EEG utilisés (zones motrices étendues)
-EEG_CHANNELS = ["C3", "C4", "Cz"]
-# EEG_CHANNELS = [
-#     "C3", "C4", "Cz",      # classiques
-#     "FC3", "FC4",          # fronto-centraux (zone motrice supplémentaire)
-#     "CP3", "CP4"           # centro-pariétaux (zone motrice supplémentaire)
-# ]
+
 
 def load_data_from_physionet(exp: int, subj: int):
     """Load data from PhysioNet using MNE's eegbci dataset"""
