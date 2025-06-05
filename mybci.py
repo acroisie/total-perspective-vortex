@@ -53,22 +53,20 @@ DATA_PATH = None
 
 # Define FilterBankCSPOfficial at module level to avoid pickle issues
 from filterbank_csp import FilterBankCSP
-from mne.decoding import CSP as OfficialCSP
+from custom_csp import CustomCSP
 
-class FilterBankCSPOfficial(FilterBankCSP):
+class FilterBankCSPCustom(FilterBankCSP):
     def fit(self, X, y):
-        # Assurer que X est en float64 pour éviter les erreurs de MNE
+        # Assurer que X est en float64 pour éviter les erreurs
         X = np.asarray(X, dtype=np.float64)
         self.csp_list = []
         for fmin, fmax in self.freq_bands:
             X_f = self._bandpass_filter(X, fmin, fmax)
-            csp = OfficialCSP(n_components=self.n_csp, log=True)
+            csp = CustomCSP(n_components=self.n_csp, log=True)
             csp.fit(X_f, y)
             self.csp_list.append(csp)
         return self
-        
     def transform(self, X):
-        # Assurer que X est en float64 pour le transform aussi
         X = np.asarray(X, dtype=np.float64)
         return super().transform(X)
 
@@ -91,7 +89,6 @@ def load_data_from_physionet(exp: int, subj: int):
     eegbci.standardize(raw)
     raw.set_montage(make_standard_montage("standard_1005"), verbose=False)
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
-    # Select only C3, C4, Cz channels
     picks = mne.pick_channels(raw.info["ch_names"], include=EEG_CHANNELS)
     raw.pick(picks)
     events, _ = mne.events_from_annotations(raw, verbose=False)
@@ -151,7 +148,6 @@ def load_data_from_files(exp: int, subj: int):
     eegbci.standardize(raw)
     raw.set_montage(make_standard_montage("standard_1005"))
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
-    # Select only C3, C4, Cz channels
     picks = mne.pick_channels(raw.info["ch_names"], include=EEG_CHANNELS)
     raw.pick(picks)
     events, _ = mne.events_from_annotations(raw, verbose=False)
@@ -197,12 +193,12 @@ def load_data(exp: int, subj: int):
 def build_pipeline(n_csp=N_CSP, use_filterbank=True, sfreq=160):
     if use_filterbank:
         return Pipeline([
-            ("FBCSP", FilterBankCSPOfficial(n_csp=n_csp, sfreq=sfreq)),
+            ("FBCSP", FilterBankCSPCustom(n_csp=n_csp, sfreq=sfreq)),
             ("LDA", LDA()),
         ])
     else:
         return Pipeline([
-            ("CSP", OfficialCSP(n_components=n_csp, log=True)),
+            ("CSP", CustomCSP(n_components=n_csp, log=True)),
             ("LDA", LDA()),
         ])
 
