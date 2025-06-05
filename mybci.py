@@ -36,6 +36,8 @@ TMIN, TMAX = 0.7, 3.9
 N_CSP = 3
 SEED = 42
 
+FAST_SUBJECTS = 10  # Nombre de sujets utilisés en mode --fast
+
 EXPERIMENT_RUNS = {
     0: [3, 7, 11],  # L/R execution
     1: [4, 8, 12],  # L/R imagery
@@ -618,16 +620,16 @@ def train_single_experiment_split(exp: int, data_path=None, use_full_dataset=Fal
     
     data_path = Path(data_path)
     subject_dirs = list_subject_dirs(data_path)
-    # Limiter à 10 sujets si use_full_dataset == False (donc mode --fast)
+    # Limiter à FAST_SUBJECTS sujets si use_full_dataset == False (donc mode --fast)
     if not use_full_dataset:
-        subject_dirs = subject_dirs[:30]
+        subject_dirs = subject_dirs[:FAST_SUBJECTS]
         print(f"[INFO] Mode rapide (--fast) : {len(subject_dirs)} sujets utilisés.")
     else:
         print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
 
     # Split train/test/holdout : 60% / 20% / 20%
-    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
-    test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=42)
+    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=SEED)
+    test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=SEED)
     print(f"[INFO] Train: {len(train_dirs)} sujets, Test: {len(test_dirs)}, Holdout: {len(holdout_dirs)}")
 
     start_time = time.time()
@@ -699,9 +701,9 @@ def train_all_experiments_split(data_path=None, use_full_dataset=False):
         raise ValueError("data_path doit être spécifié pour le mode multi-sujets.")
     data_path = Path(data_path)
     subject_dirs = list_subject_dirs(data_path)
-    # Limiter à 10 sujets si use_full_dataset == False (donc mode --fast)
+    # Limiter à FAST_SUBJECTS sujets si use_full_dataset == False (donc mode --fast)
     if not use_full_dataset:
-        subject_dirs = subject_dirs[:30]
+        subject_dirs = subject_dirs[:FAST_SUBJECTS]
         print(f"[INFO] Mode rapide (--fast) : {len(subject_dirs)} sujets utilisés.")
     else:
         print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
