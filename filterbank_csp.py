@@ -2,6 +2,26 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from custom_csp import CustomCSP
 import mne
+from mne.decoding import CSP
+import warnings
+import logging
+import joblib
+
+# Désactivation des warnings Python
+warnings.filterwarnings('ignore')
+# Désactivation du logger MNE
+mne.set_log_level('ERROR')
+logging.getLogger('mne').setLevel(logging.ERROR)
+logging.getLogger('mne').propagate = False
+# Désactivation du root logger (pour joblib/sklearn)
+logging.getLogger().setLevel(logging.ERROR)
+# Désactivation des logs joblib
+try:
+    joblib_logger = logging.getLogger('joblib')
+    joblib_logger.setLevel(logging.ERROR)
+    joblib_logger.propagate = False
+except Exception:
+    pass
 
 class FilterBankCSP(BaseEstimator, TransformerMixin):
     """
@@ -23,7 +43,7 @@ class FilterBankCSP(BaseEstimator, TransformerMixin):
         self.csp_list = []
         for fmin, fmax in self.freq_bands:
             X_f = self._bandpass_filter(X, fmin, fmax)
-            csp = CustomCSP(n_components=self.n_csp)
+            csp = CSP(n_components=self.n_csp)
             csp.fit(X_f, y)
             self.csp_list.append(csp)
         return self
@@ -42,7 +62,9 @@ class FilterBankCSP(BaseEstimator, TransformerMixin):
 
     def _bandpass_filter(self, X, fmin, fmax):
         # X: (n_trials, n_channels, n_times)
-        X_filt = np.zeros_like(X)
-        for i in range(X.shape[0]):
-            X_filt[i] = mne.filter.filter_data(X[i], self.sfreq, fmin, fmax, verbose=False)
+        n_trials, n_channels, n_times = X.shape
+        # On vectorise le filtrage sur tous les essais et canaux d'un coup
+        X_reshaped = X.reshape(-1, n_times)  # (n_trials * n_channels, n_times)
+        X_filt = mne.filter.filter_data(X_reshaped, self.sfreq, fmin, fmax, verbose='ERROR')
+        X_filt = X_filt.reshape(n_trials, n_channels, n_times)
         return X_filt
