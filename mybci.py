@@ -243,7 +243,7 @@ def collect_all_data(exp: int, subjects=None, use_full_dataset=False):
 # -------------------------------------------------------------------------
 
 
-def train_experiment(exp: int, use_full_dataset=False):
+def train_experiment_OBSOLETE(exp: int, use_full_dataset=False):
     """Train a single model for one experiment using all subjects"""
     import time
     print(f"\n=== Training experiment {exp} ===")
@@ -322,7 +322,7 @@ def predict_subject(exp: int, subj: int):
     return accuracy
 
 
-def train_all_experiments(use_full_dataset=False):
+def train_all_experiments_OBSOLETE(use_full_dataset=False):
     """Train models for all 6 experiments"""
     import time
     start_time = time.time()
@@ -337,7 +337,7 @@ def train_all_experiments(use_full_dataset=False):
 
     for exp in range(6):
         try:
-            acc = train_experiment(exp, use_full_dataset=use_full_dataset)
+            acc = train_experiment_OBSOLETE(exp, use_full_dataset=use_full_dataset)
             accuracies.append(acc)
         except Exception as e:
             print(f"Failed to train experiment {exp}: {e}")
@@ -493,12 +493,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python mybci.py                     # Train all 6 models then evaluate
-  python mybci.py --full              # Train all 6 models on full dataset (109 subjects)
-  python mybci.py 4 14 train         # Train experiment 4, test on subject 14
-  python mybci.py 4 14 predict       # Predict experiment 4 on subject 14
-  python mybci.py 4 14 stream        # Stream simulation for experiment 4, subject 14
-  python mybci.py --data files       # Use local data files
+  python mybci.py --data /path/to/data             # Train all 6 models with subject split approach
+  python mybci.py --data /path/to/data --full     # Train all 6 models with subject split on full dataset
+  python mybci.py 4 14 train                      # Train experiment 4, test on subject 14 (single subject)
+  python mybci.py 4 14 predict                    # Predict experiment 4 on subject 14
+  python mybci.py 4 14 stream                     # Stream simulation for experiment 4, subject 14
+  python mybci.py 4 --data /path/to/data          # Train only experiment 4 with subject split
         """,
     )
 
@@ -535,12 +535,6 @@ Examples:
         default=2.0,
         help="Delay in seconds for stream simulation (default: 2.0)",
     )
-    
-    parser.add_argument(
-        "--split",
-        action="store_true",
-        help="Use split training approach (train/test/holdout on subjects)",
-    )
 
     args = parser.parse_args()
 
@@ -552,27 +546,32 @@ Examples:
             return
         print(f"Using local data from: {DATA_PATH}")
 
-    # Case 1: No arguments - train all then evaluate
+    # Case 1: No arguments - train all then evaluate (TOUJOURS avec split)
     if args.experiment is None:
-        if args.split:
-            if args.full:
-                print("Training all experiments with subject split approach on full dataset...")
-            else:
-                print("Training all experiments with subject split approach...")
-            train_all_experiments_split(data_path=DATA_PATH, use_full_dataset=args.full)
+        if DATA_PATH is None:
+            print("Error: --data path is required for split training approach")
+            print("Usage: python mybci.py --data /path/to/data [--full]")
+            return
+        
+        if args.full:
+            print("Training all experiments with subject split approach on full dataset...")
         else:
-            if args.full:
-                print("Training all 6 models on full dataset (109 subjects)...")
-            else:
-                print("Training all 6 models on subset (10 subjects)...")
-            train_all_experiments(use_full_dataset=args.full)
-            evaluate_all_experiments()
+            print("Training all experiments with subject split approach...")
+        train_all_experiments_split(data_path=DATA_PATH, use_full_dataset=args.full)
         return
 
-    # Case 2: Only experiment provided
+    # Case 2: Only experiment provided (TOUJOURS avec split)
     if args.subject is None:
-        print(f"Training experiment {args.experiment} on all subjects...")
-        train_experiment(args.experiment)
+        if DATA_PATH is None:
+            print("Error: --data path is required for split training approach")
+            print("Usage: python mybci.py --experiment exp_id --data /path/to/data [--full]")
+            return
+        
+        if args.full:
+            print(f"Training experiment {args.experiment} with subject split approach on full dataset...")
+        else:
+            print(f"Training experiment {args.experiment} with subject split approach...")
+        train_single_experiment_split(args.experiment, data_path=DATA_PATH, use_full_dataset=args.full)
         return
 
     # Case 3: Experiment and subject provided
@@ -608,6 +607,83 @@ Examples:
             )
         except Exception as e:
             print(f"Error: {e}")
+
+
+def train_single_experiment_split(exp: int, data_path=None, use_full_dataset=False):
+    """
+    Entraîne une seule expérience avec l'approche de split multi-sujets.
+    """
+    import time
+    from sklearn.model_selection import train_test_split
+    from utils_multi_subject import list_subject_dirs, aggregate_multi_subject_data
+
+    if data_path is None:
+        raise ValueError("data_path doit être spécifié pour le mode multi-sujets.")
+    
+    data_path = Path(data_path)
+    subject_dirs = list_subject_dirs(data_path)
+    print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
+
+    # Split train/test/holdout
+    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.2, random_state=42)
+    test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=42)
+    print(f"[INFO] Train: {len(train_dirs)} sujets, Test: {len(test_dirs)}, Holdout: {len(holdout_dirs)}")
+
+    start_time = time.time()
+    print(f"\n[INFO] ============ Expérience {exp} ============")
+    
+    try:
+        X_train, y_train, valid_train = aggregate_multi_subject_data(train_dirs, exp, load_data)
+        X_test, y_test, valid_test = aggregate_multi_subject_data(test_dirs, exp, load_data)
+    except Exception as e:
+        print(f"[ERROR] Pas de data pour exp={exp}: {e}")
+        return
+    
+    if len(np.unique(y_train)) < 2:
+        print(f"[ERROR] Expérience {exp} n'a qu'une seule classe en train.")
+        return
+
+    pipe = build_pipeline()
+    
+    try:
+        # Cross-validation sur le train set
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cv_scores = cross_val_score(pipe, X_train, y_train, cv=5, scoring='accuracy')
+        print(f"[INFO] cross_val_scores={cv_scores}, mean={cv_scores.mean():.3f}")
+    except Exception as e:
+        print(f"[ERROR] Erreur cross_val pour exp={exp}: {e}")
+        return
+    
+    # Entraînement final sur le train set
+    pipe.fit(X_train, y_train)
+    
+    # Test sur le test set
+    test_acc = pipe.score(X_test, y_test)
+    print(f"[INFO] Test accuracy={test_acc:.3f}")
+    
+    # Sauvegarde du modèle
+    model_filename = MODEL_DIR / f"bci_exp{exp}_split.pkl"
+    joblib.dump({
+        "model": pipe,
+        "cv_scores": cv_scores,
+        "test_acc": test_acc,
+        "valid_train_subjects": valid_train,
+        "valid_test_subjects": valid_test
+    }, model_filename)
+    print(f"[INFO] Modèle sauvegardé => {model_filename}")
+    
+    # Holdout evaluation
+    try:
+        X_hold, y_hold, _ = aggregate_multi_subject_data(holdout_dirs, exp, load_data)
+        preds = pipe.predict(X_hold)
+        hold_acc = np.mean(preds == y_hold)
+        print(f"[INFO] Holdout accuracy exp={exp}: {hold_acc:.3f}")
+    except Exception as e:
+        print(f"[INFO] exp={exp}, pas de data holdout => skip. ({e})")
+    
+    elapsed = time.time() - start_time
+    print(f"\n[INFO] Temps d'exécution pour exp {exp} : {int(elapsed//60)}:{int(elapsed%60):02d} (min:ss)")
 
 
 def train_all_experiments_split(data_path=None, use_full_dataset=False):
