@@ -75,12 +75,12 @@ class FilterBankCSPOfficial(FilterBankCSP):
 # -------------------------------------------------------------------------
 
 # Constante pour les canaux EEG utilisés (zones motrices étendues)
-# Sélection élargie pour couvrir les régions motrices (gyrus précentral, postcentral, etc.)
-EEG_CHANNELS = [
-    "C3", "C4", "Cz",      # classiques
-    "FC3", "FC4",          # fronto-centraux (zone motrice supplémentaire)
-    "CP3", "CP4"           # centro-pariétaux (zone motrice supplémentaire)
-]
+EEG_CHANNELS = ["C3", "C4", "Cz"]
+# EEG_CHANNELS = [
+#     "C3", "C4", "Cz",      # classiques
+#     "FC3", "FC4",          # fronto-centraux (zone motrice supplémentaire)
+#     "CP3", "CP4"           # centro-pariétaux (zone motrice supplémentaire)
+# ]
 
 def load_data_from_physionet(exp: int, subj: int):
     """Load data from PhysioNet using MNE's eegbci dataset"""
