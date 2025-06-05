@@ -10,6 +10,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from custom_csp import CustomCSP
+from mne.decoding import CSP
 
 FMIN, FMAX = 7.0, 30.0
 TMIN, TMAX = 0.0, 4.0
@@ -43,6 +44,9 @@ def load_data_from_physionet(exp: int, subj: int):
     eegbci.standardize(raw)
     raw.set_montage(make_standard_montage("standard_1005"))
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
+    # Select only C3, C4, Cz channels
+    picks = mne.pick_channels(raw.info["ch_names"], include=["C3", "C4", "Cz"])
+    raw.pick(picks)
     events, _ = mne.events_from_annotations(raw)
     event_id = {"hands": 2, "feet": 3, "left": 1, "right": 2}
     epochs = mne.Epochs(
@@ -61,8 +65,11 @@ def load_data_from_physionet(exp: int, subj: int):
     y = epochs.events[:, 2]
     # Map left/right to 0/1 and hands/feet to 0/1 so classes always 0/1
     y = (y % 2).astype(int)
-    if len(X) == 0 or len(np.unique(y)) < 2:
-        raise ValueError("Dataset has <2 classes")
+    # Harmonize epoch length
+    min_len = X.shape[2]
+    if X.shape[0] > 0:
+        min_len = min([X.shape[2]] + [X.shape[2] for X in [X]])
+    X = X[:, :, :min_len]
     return X, y
 
 
@@ -97,6 +104,9 @@ def load_data_from_files(exp: int, subj: int):
     eegbci.standardize(raw)
     raw.set_montage(make_standard_montage("standard_1005"))
     raw.filter(FMIN, FMAX, fir_design="firwin", verbose=False)
+    # Select only C3, C4, Cz channels
+    picks = mne.pick_channels(raw.info["ch_names"], include=["C3", "C4", "Cz"])
+    raw.pick(picks)
     events, _ = mne.events_from_annotations(raw)
 
     # Determine event_id based on experiment type
@@ -121,9 +131,11 @@ def load_data_from_files(exp: int, subj: int):
     y = epochs.events[:, 2]
     # Map to binary classes
     y = (y % 2).astype(int)
-
-    if len(X) == 0 or len(np.unique(y)) < 2:
-        raise ValueError("Dataset has <2 classes")
+    # Harmonize epoch length
+    min_len = X.shape[2]
+    if X.shape[0] > 0:
+        min_len = min([X.shape[2]] + [X.shape[2] for X in [X]])
+    X = X[:, :, :min_len]
     return X, y
 
 
@@ -135,55 +147,76 @@ def load_data(exp: int, subj: int):
         return load_data_from_physionet(exp, subj)
 
 
-def build_pipeline(n_csp=N_CSP):
-    return Pipeline(
-        [
-            (
-                "CSP",
-                CustomCSP(
-                    n_components=n_csp, reg=None, log=True, norm_trace=False
-                ),
-            ),
+def build_pipeline(n_csp=N_CSP, use_filterbank=True, sfreq=160):
+    if use_filterbank:
+        # Utilisation du CSP officiel MNE dans le filterbank
+        from mne.decoding import CSP as OfficialCSP
+        from filterbank_csp import FilterBankCSP
+        class FilterBankCSPOfficial(FilterBankCSP):
+            def fit(self, X, y):
+                # Assurer que X est en float64 pour éviter les erreurs de MNE
+                X = np.asarray(X, dtype=np.float64)
+                self.csp_list = []
+                for fmin, fmax in self.freq_bands:
+                    X_f = self._bandpass_filter(X, fmin, fmax)
+                    csp = OfficialCSP(n_components=self.n_csp, log=True)
+                    csp.fit(X_f, y)
+                    self.csp_list.append(csp)
+                return self
+                
+            def transform(self, X):
+                # Assurer que X est en float64 pour le transform aussi
+                X = np.asarray(X, dtype=np.float64)
+                return super().transform(X)
+        return Pipeline([
+            ("FBCSP", FilterBankCSPOfficial(n_csp=n_csp, sfreq=sfreq)),
             ("LDA", LDA()),
-        ]
-    )
+        ])
+    else:
+        from mne.decoding import CSP as OfficialCSP
+        return Pipeline([
+            ("CSP", OfficialCSP(n_components=n_csp, log=True)),
+            ("LDA", LDA()),
+        ])
 
 
 def collect_all_data(exp: int, subjects=None, use_full_dataset=False):
-    """Collect data from all subjects for training a single model"""
+    """Collect data from all subjects for training a single model (epochs harmonized in time)"""
     if subjects is None:
         if use_full_dataset:
-            # Use all 109 subjects for full dataset
             subjects = range(1, 110)
             print(f"Using full dataset: {len(subjects)} subjects")
         else:
-            # Use first 10 subjects for quick testing
             subjects = range(1, 11)
-            print(
-                f"Using subset: {len(subjects)} subjects"
-            )  # Quick test with 10 subjects
+            print(f"Using subset: {len(subjects)} subjects")
 
     all_X, all_y = [], []
     valid_subjects = []
+    epoch_lengths = []
 
+    # First pass: get all data and record epoch lengths
     for subj in subjects:
         try:
             X, y = load_data(exp, subj)
-            all_X.append(X)
-            all_y.append(y)
-            valid_subjects.append(subj)
+            if X.shape[0] > 0:
+                all_X.append(X)
+                all_y.append(y)
+                valid_subjects.append(subj)
+                epoch_lengths.append(X.shape[2])
         except Exception as e:
             print(f"Skip subject {subj}: {e}")
 
     if not all_X:
         raise ValueError(f"No valid data found for experiment {exp}")
 
+    # Harmonize all epochs to the minimal length across all subjects
+    min_len = min(epoch_lengths)
+    all_X = [X[:, :, :min_len] for X in all_X]
+
     X_combined = np.concatenate(all_X, axis=0)
     y_combined = np.concatenate(all_y, axis=0)
 
-    print(
-        f"Experiment {exp}: collected {len(X_combined)} epochs from {len(valid_subjects)} subjects"
-    )
+    print(f"Experiment {exp}: collected {len(X_combined)} epochs from {len(valid_subjects)} subjects (epoch length: {min_len})")
     return X_combined, y_combined, valid_subjects
 
 
@@ -192,8 +225,10 @@ def collect_all_data(exp: int, subjects=None, use_full_dataset=False):
 
 def train_experiment(exp: int, use_full_dataset=False):
     """Train a single model for one experiment using all subjects"""
+    import time
     print(f"\n=== Training experiment {exp} ===")
 
+    start_time = time.time()
     X, y, valid_subjects = collect_all_data(
         exp, use_full_dataset=use_full_dataset
     )
@@ -201,7 +236,7 @@ def train_experiment(exp: int, use_full_dataset=False):
     # Cross-validation
     pipe = build_pipeline()
     cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=SEED)
-    scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=1)
+    scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=12)
 
     print(f"Cross-validation scores: {scores}")
     print(f"cross_val_score: {scores.mean():.4f}")
@@ -221,7 +256,9 @@ def train_experiment(exp: int, use_full_dataset=False):
         model_path,
     )
 
+    elapsed = time.time() - start_time
     print(f"Model saved to {model_path}")
+    print(f"Training time: {elapsed:.1f} seconds")
     return scores.mean()
 
 
@@ -263,6 +300,9 @@ def predict_subject(exp: int, subj: int):
 
 def train_all_experiments(use_full_dataset=False):
     """Train models for all 6 experiments"""
+    import time
+    start_time = time.time()
+    
     dataset_info = (
         "full dataset (109 subjects)"
         if use_full_dataset
@@ -282,13 +322,24 @@ def train_all_experiments(use_full_dataset=False):
         print(
             f"\nMean cross-validation accuracy across experiments: {np.mean(accuracies):.4f}"
         )
+    
+    # Afficher le temps total d'exécution
+    elapsed = time.time() - start_time
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    print(f"\nTemps total d'exécution: {minutes}:{seconds:02d} (min:ss)")
 
 
 def evaluate_all_experiments():
-    """Evaluate all experiments on all subjects"""
+    """Evaluate all experiments on all subjects (format conforme au sujet)"""
+    import time
+    start_time = time.time()
+    
     print("Evaluating all experiments on all subjects...")
 
     exp_accuracies = {}
+    all_exp_subject_accs = {}
+    cross_val_scores = {}
 
     for exp in range(6):
         model_path = MODEL_DIR / f"bci_exp{exp}.pkl"
@@ -299,6 +350,12 @@ def evaluate_all_experiments():
         data = joblib.load(model_path)
         pipe = data["model"]
         valid_subjects = data.get("valid_subjects", range(1, 110))
+        
+        # Récupérer et stocker le cross-validation score
+        if "mean_cv_score" in data:
+            cross_val_scores[exp] = data["mean_cv_score"]
+        elif "cv_scores" in data:
+            cross_val_scores[exp] = np.mean(data["cv_scores"])
 
         subject_accs = []
         for subj in valid_subjects:
@@ -307,24 +364,39 @@ def evaluate_all_experiments():
                 predictions = pipe.predict(X)
                 acc = (predictions == y).mean()
                 subject_accs.append(acc)
-                print(
-                    f"experiment {exp}: subject {subj:03d}: accuracy = {acc:.1f}"
-                )
+                # Format plus simple comme demandé dans le sujet
+                print(f"experiment {exp}: subject {subj:03d}: accuracy = {acc:.1f}")
             except Exception as e:
                 print(f"experiment {exp}: subject {subj:03d}: error = {e}")
 
         if subject_accs:
             exp_mean = np.mean(subject_accs)
             exp_accuracies[exp] = exp_mean
+            all_exp_subject_accs[exp] = subject_accs
             print(f"experiment {exp}: accuracy = {exp_mean:.4f}")
         else:
             print(f"experiment {exp}: no valid subjects")
 
     if exp_accuracies:
+        print("\nMean accuracy of the six different experiments for all 109 subjects:")
+        for exp in range(6):
+            if exp in exp_accuracies:
+                print(f"experiment {exp}: accuracy = {exp_accuracies[exp]:.4f}")
+                if exp in cross_val_scores:
+                    print(f"experiment {exp}: cross_val_score = {cross_val_scores[exp]:.4f}")
+        
         overall_mean = np.mean(list(exp_accuracies.values()))
-        print(
-            f"Mean accuracy of {len(exp_accuracies)} experiments: {overall_mean:.4f}"
-        )
+        print(f"Mean accuracy of 6 experiments: {overall_mean:.4f}")
+        
+        if cross_val_scores:
+            cv_mean = np.mean(list(cross_val_scores.values()))
+            print(f"Mean cross_val_score of experiments: {cv_mean:.4f}")
+    
+    # Afficher le temps total d'exécution
+    elapsed = time.time() - start_time
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    print(f"\nTemps total d'évaluation: {minutes}:{seconds:02d} (min:ss)")
 
 
 def predict_subject_stream(exp: int, subj: int, delay=2.0):
@@ -439,6 +511,12 @@ Examples:
         default=2.0,
         help="Delay in seconds for stream simulation (default: 2.0)",
     )
+    
+    parser.add_argument(
+        "--split",
+        action="store_true",
+        help="Use split training approach (train/test/holdout on subjects)",
+    )
 
     args = parser.parse_args()
 
@@ -452,12 +530,19 @@ Examples:
 
     # Case 1: No arguments - train all then evaluate
     if args.experiment is None:
-        if args.full:
-            print("Training all 6 models on full dataset (109 subjects)...")
+        if args.split:
+            if args.full:
+                print("Training all experiments with subject split approach on full dataset...")
+            else:
+                print("Training all experiments with subject split approach...")
+            train_all_experiments_split(data_path=DATA_PATH, use_full_dataset=args.full)
         else:
-            print("Training all 6 models on subset (10 subjects)...")
-        train_all_experiments(use_full_dataset=args.full)
-        evaluate_all_experiments()
+            if args.full:
+                print("Training all 6 models on full dataset (109 subjects)...")
+            else:
+                print("Training all 6 models on subset (10 subjects)...")
+            train_all_experiments(use_full_dataset=args.full)
+            evaluate_all_experiments()
         return
 
     # Case 2: Only experiment provided
@@ -479,8 +564,8 @@ Examples:
         try:
             X, y = load_data(args.experiment, args.subject)
             pipe = build_pipeline()
-            cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=SEED)
-            scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=1)
+            cv = StratifiedKFold(n_splits=10, shuffle= True, random_state=SEED)
+            scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=12)
             print(scores.round(4))
             print(f"cross_val_score: {scores.mean():.4f}")
         except Exception as e:
@@ -499,6 +584,74 @@ Examples:
             )
         except Exception as e:
             print(f"Error: {e}")
+
+
+def train_all_experiments_split(data_path=None, use_full_dataset=False):
+    """
+    Nouvelle version : split multi-sujets (train/test/holdout), aggregation, entraînement, validation, test, sauvegarde, reporting.
+    """
+    import time
+    from sklearn.model_selection import train_test_split
+    from utils_multi_subject import list_subject_dirs, aggregate_multi_subject_data
+
+    if data_path is None:
+        raise ValueError("data_path doit être spécifié pour le mode multi-sujets.")
+    data_path = Path(data_path)
+    subject_dirs = list_subject_dirs(data_path)
+    print(f"[INFO] {len(subject_dirs)} sujets trouvés.")
+
+    # Split train/test/holdout
+    train_dirs, tmp_dirs = train_test_split(subject_dirs, test_size=0.4, random_state=42)
+    test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=42)
+    print(f"[INFO] Train: {len(train_dirs)} sujets, Test: {len(test_dirs)}, Holdout: {len(holdout_dirs)}")
+
+    categories = list(range(6))
+    models = {}
+    results = {}
+    start_time = time.time()
+    for exp in categories:
+        print(f"\n[INFO] ============ Expérience {exp} ============")
+        try:
+            X_train, y_train, valid_train = aggregate_multi_subject_data(train_dirs, exp, load_data)
+            X_test, y_test, valid_test = aggregate_multi_subject_data(test_dirs, exp, load_data)
+        except Exception as e:
+            print(f"[WARN] Pas de data pour exp={exp}: {e}")
+            continue
+        if len(np.unique(y_train)) < 2:
+            print(f"[WARN] Expérience {exp} n'a qu'une seule classe en train, skip.")
+            continue
+        pipe = build_pipeline()
+        try:
+            cv_scores = cross_val_score(pipe, X_train, y_train, cv=5, scoring='accuracy')
+            print(f"[INFO] cross_val_scores={cv_scores}, mean={cv_scores.mean():.3f}")
+        except Exception as e:
+            print(f"[ERROR] Erreur cross_val pour exp={exp}: {e}")
+            continue
+        pipe.fit(X_train, y_train)
+        test_acc = pipe.score(X_test, y_test)
+        print(f"[INFO] Test accuracy={test_acc:.3f}")
+        models[exp] = pipe
+        results[exp] = {"cv_scores": cv_scores, "test_acc": test_acc}
+        model_filename = MODEL_DIR / f"bci_exp{exp}_split.pkl"
+        joblib.dump(pipe, model_filename)
+        print(f"[INFO] Modèle sauvegardé => {model_filename}")
+    # Holdout
+    holdout_accuracies = []
+    for exp, pipe in models.items():
+        try:
+            X_hold, y_hold, _ = aggregate_multi_subject_data(holdout_dirs, exp, load_data)
+        except Exception as e:
+            print(f"[INFO] exp={exp}, pas de data holdout => skip. ({e})")
+            continue
+        preds = pipe.predict(X_hold)
+        hold_acc = np.mean(preds == y_hold)
+        print(f"[INFO] Holdout accuracy exp={exp}: {hold_acc:.3f}")
+        holdout_accuracies.append(hold_acc)
+    if holdout_accuracies:
+        moyenne = np.mean(holdout_accuracies)
+        print(f"\n[INFO] Moyenne holdout accuracy des modèles : {moyenne:.3f}")
+    elapsed = time.time() - start_time
+    print(f"\n[INFO] Temps total d'exécution : {int(elapsed//60)}:{int(elapsed%60):02d} (min:ss)")
 
 
 if __name__ == "__main__":
