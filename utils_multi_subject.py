@@ -3,11 +3,21 @@ from pathlib import Path
 import numpy as np
 from typing import List, Dict, Tuple, Callable
 
+
 def list_subject_dirs(data_path: Path) -> List[Path]:
     """Liste les dossiers sujets (S001, S002, ...) dans le dossier data_path."""
-    return sorted([p for p in data_path.iterdir() if p.is_dir() and p.name.startswith("S") and len(p.name) == 4])
+    return sorted(
+        [
+            p
+            for p in data_path.iterdir()
+            if p.is_dir() and p.name.startswith("S") and len(p.name) == 4
+        ]
+    )
 
-def aggregate_multi_subject_data(subject_dirs: List[Path], exp: int, load_data_func: Callable) -> Tuple[np.ndarray, np.ndarray, List[int]]:
+
+def aggregate_multi_subject_data(
+    subject_dirs: List[Path], exp: int, load_data_func: Callable
+) -> Tuple[np.ndarray, np.ndarray, List[int]]:
     """
     Agrège les données de plusieurs sujets pour une expérience donnée.
     Retourne X, y, liste des sujets valides.

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse, logging, time, warnings
 from pathlib import Path
 
@@ -9,7 +8,11 @@ from mne.datasets import eegbci
 from mne.channels import make_standard_montage
 from mne.io import read_raw_edf, concatenate_raws
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import (
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
 from sklearn.pipeline import Pipeline
 
 from filterbank_csp import FilterBankCSP
@@ -31,12 +34,18 @@ PREDICT_DELAY = 0.1
 EEG_CHANNELS = ["C3", "C4", "Cz"]  # keep it simple
 N_CSP = 3
 USE_FILTERBANK = True
-MODEL_DIR = Path("models"); MODEL_DIR.mkdir(exist_ok=True)
+MODEL_DIR = Path("models")
+MODEL_DIR.mkdir(exist_ok=True)
 
 EXPERIMENT_RUNS = {
-    0: [3, 7, 11], 1: [4, 8, 12], 2: [5, 9, 13], 3: [6, 10, 14],
-    4: [3, 4, 7, 8, 11, 12], 5: [5, 6, 9, 10, 13, 14],
+    0: [3, 7, 11], # left vs right hand
+    1: [4, 8, 12], # left vs right foot
+    2: [5, 9, 13], # right hand vs foot
+    3: [6, 10, 14], # right hand vs foot
+    4: [3, 4, 7, 8, 11, 12], # all left
+    5: [5, 6, 9, 10, 13, 14], # all right
 }
+
 
 # ────────────────── CSP wrapper ──────────────────
 class FBCSP(FilterBankCSP):
@@ -59,15 +68,16 @@ class FBCSP(FilterBankCSP):
 def make_pipe():
     if USE_FILTERBANK:
         # print(f"Using FilterBankCSP with n_csp={N_CSP}, sfreq=160")
-        return Pipeline([("FBCSP", FBCSP(n_csp=N_CSP, sfreq=160)), ("LDA", LDA())])
+        return Pipeline(
+            [("FBCSP", FBCSP(n_csp=N_CSP, sfreq=160)), ("LDA", LDA())]
+        )
     print(f"Using CustomCSP with n_components={N_CSP}")
-    return Pipeline([("CSP", CustomCSP(n_components=N_CSP, log=True)), ("LDA", LDA())])
+    return Pipeline(
+        [("CSP", CustomCSP(n_components=N_CSP, log=True)), ("LDA", LDA())]
+    )
+
 
 # ────────────────── data loaders ──────────────────
-
-def _raw_from_physionet(exp: int, subj: int):
-    files = eegbci.load_data(subj, EXPERIMENT_RUNS[exp], verbose=False)
-    return concatenate_raws([read_raw_edf(f, preload=True, verbose=False) for f in files])
 
 
 def _raw_from_files(exp: int, subj: int, root: Path):
@@ -77,7 +87,9 @@ def _raw_from_files(exp: int, subj: int, root: Path):
     files = [str(f) for f in files if f.exists()]
     if not files:
         raise FileNotFoundError(f"Missing EDF for S{subj:03d}, exp {exp}")
-    return concatenate_raws([read_raw_edf(f, preload=True, verbose=False) for f in files])
+    return concatenate_raws(
+        [read_raw_edf(f, preload=True, verbose=False) for f in files]
+    )
 
 
 def _prep_raw(raw):
@@ -88,8 +100,8 @@ def _prep_raw(raw):
     return raw
 
 
-def load_data(exp: int, subj: int, data_dir: Path | None = None):
-    raw = _raw_from_files(exp, subj, data_dir) if data_dir else _raw_from_physionet(exp, subj)
+def load_data(exp: int, subj: int, data_dir: Path):
+    raw = _raw_from_files(exp, subj, data_dir)
     raw = _prep_raw(raw)
     events, _ = mne.events_from_annotations(raw, verbose=False)
 
@@ -98,19 +110,33 @@ def load_data(exp: int, subj: int, data_dir: Path | None = None):
     else:  # hands/feet
         event_id = {"hands": 2, "feet": 3}
 
-    epochs = mne.Epochs(raw, events, event_id, TMIN, TMAX, baseline=None,
-                        detrend=1, preload=True, verbose=False, picks="eeg")
+    epochs = mne.Epochs(
+        raw,
+        events,
+        event_id,
+        TMIN,
+        TMAX,
+        baseline=None,
+        detrend=1,
+        preload=True,
+        verbose=False,
+        picks="eeg",
+    )
     X = epochs.get_data().astype(np.float64)
     y = (epochs.events[:, 2] % 2).astype(int)
     min_len = min(X.shape[2], *(e.shape[2] for e in [X]))
     return X[:, :, :min_len], y
 
+
 # ────────────────── helpers ──────────────────
 
+
 def _pick_model(exp: int, subj: int | None = None):
-    cands = [MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl" if subj else None,
-             MODEL_DIR / f"bci_exp{exp}.pkl",
-             MODEL_DIR / f"bci_exp{exp}_split.pkl"]
+    cands = [
+        MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl" if subj else None,
+        MODEL_DIR / f"bci_exp{exp}.pkl",
+        MODEL_DIR / f"bci_exp{exp}_split.pkl",
+    ]
     for p in filter(None, cands):
         if p.exists():
             return p
@@ -121,39 +147,54 @@ def _load_pipe(path: Path):
     data = joblib.load(path)
     return data["model"] if isinstance(data, dict) and "model" in data else data
 
+
 # ────────────────── core actions ──────────────────
 
-def predict_subject(exp: int, subj: int, data_dir: Path | None = None, playback: bool = False):
+
+def predict_subject(
+    exp: int, subj: int, data_dir: Path, playback: bool = False
+):
     model_path = _pick_model(exp, subj)
     pipe = _load_pipe(model_path)
     X, y = load_data(exp, subj, data_dir)
     if playback:
         import time
-        start = time.time(); ok = 0
+
+        start = time.time()
+        ok = 0
         print(f"epoch nb: [prediction] [truth] equal?")
         for i, (e, t) in enumerate(zip(X, y)):
             time.sleep(0.01)
             pred = pipe.predict(e[None])[0]
             ok += pred == t
-            print(f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)")
+            print(
+                f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)"
+            )
         print(f"Accuracy: {ok/len(y):.4f}")
     else:
         preds = pipe.predict(X)
         report(preds, y)
 
 
-def stream_subject(exp: int, subj: int, delay: float = 2.0, data_dir: Path | None = None):
+def stream_subject(
+    exp: int, subj: int, data_dir: Path, delay: float = 2.0
+):
     model_path = _pick_model(exp, subj)
     pipe = _load_pipe(model_path)
     X, y = load_data(exp, subj, data_dir)
-    start = time.time(); ok = 0
+    start = time.time()
+    ok = 0
     print(f"epoch nb: [prediction] [truth] equal?")
     for i, (e, t) in enumerate(zip(X, y)):
-        if i: time.sleep(delay)
-        else: time.sleep(0.06)
+        if i:
+            time.sleep(delay)
+        else:
+            time.sleep(0.06)
         pred = pipe.predict(e[None])[0]
         ok += pred == t
-        print(f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)")
+        print(
+            f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)"
+        )
     print(f"Accuracy: {ok/len(y):.4f}")
 
 
@@ -164,7 +205,9 @@ def report(preds, truth):
         print(f"epoch {i:02d}: [{p}] [{t}] {c}")
     print(f"Accuracy: {ok.mean():.4f}")
 
+
 # ────────────────── training ──────────────────
+
 
 def _cv(pipe, X, y):
     cv = StratifiedKFold(10, shuffle=True, random_state=SEED)
@@ -174,7 +217,7 @@ def _cv(pipe, X, y):
     return scores
 
 
-def train_subject(exp: int, subj: int, data_dir: Path | None = None):
+def train_subject(exp: int, subj: int, data_dir: Path):
     X, y = load_data(exp, subj, data_dir)
     pipe = make_pipe()
     scores = _cv(pipe, X, y)
@@ -183,16 +226,22 @@ def train_subject(exp: int, subj: int, data_dir: Path | None = None):
     joblib.dump({"model": pipe, "cv_scores": scores}, model_path)
     print(f"Model saved to {model_path}")
 
+
 # Multi‑subject split (train/test/holdout)
+
 
 def _aggregate(subject_dirs, exp, data_dir):
     from utils_multi_subject import aggregate_multi_subject_data
-    return aggregate_multi_subject_data(subject_dirs, exp, lambda e, s: load_data(e, s, data_dir))
+
+    return aggregate_multi_subject_data(
+        subject_dirs, exp, lambda e, s: load_data(e, s, data_dir)
+    )
 
 
 def train_split(exp: int | None, data_dir: Path, full: bool):
     from utils_multi_subject import list_subject_dirs
     import time
+
     start_time = time.time()
     subs = list_subject_dirs(data_dir)
     if not full:
@@ -201,9 +250,15 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
     else:
         print(f"[INFO] {len(subs)} subjects found")
 
-    train_dirs, tmp_dirs = train_test_split(subs, test_size=0.4, random_state=SEED)
-    test_dirs, holdout_dirs = train_test_split(tmp_dirs, test_size=0.5, random_state=SEED)
-    print(f"[INFO] Train: {len(train_dirs)} Test: {len(test_dirs)} Holdout: {len(holdout_dirs)}")
+    train_dirs, tmp_dirs = train_test_split(
+        subs, test_size=0.4, random_state=SEED
+    )
+    test_dirs, holdout_dirs = train_test_split(
+        tmp_dirs, test_size=0.5, random_state=SEED
+    )
+    print(
+        f"[INFO] Train: {len(train_dirs)} Test: {len(test_dirs)} Holdout: {len(holdout_dirs)}"
+    )
 
     exps = range(6) if exp is None else [exp]
     for e in exps:
@@ -212,9 +267,11 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
             X_tr, y_tr, _ = _aggregate(train_dirs, e, data_dir)
             X_te, y_te, _ = _aggregate(test_dirs, e, data_dir)
         except Exception as err:
-            print(f"[WARN] Skip exp {e}: {err}"); continue
+            print(f"[WARN] Skip exp {e}: {err}")
+            continue
         if len(np.unique(y_tr)) < 2:
-            print(f"[WARN] Exp {e} has one class only, skip"); continue
+            print(f"[WARN] Exp {e} has one class only, skip")
+            continue
         pipe = make_pipe()
         cv_scores = cross_val_score(pipe, X_tr, y_tr, cv=5, scoring="accuracy")
         print(f"[INFO] cv_scores: {cv_scores.round(4)}")
@@ -223,13 +280,17 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
         test_acc = pipe.score(X_te, y_te)
         print(f"[INFO] Test acc={test_acc:.3f}")
         model_path = MODEL_DIR / f"bci_exp{e}.pkl"
-        joblib.dump({"model": pipe, "cv_scores": cv_scores, "test_acc": test_acc}, model_path)
+        joblib.dump(
+            {"model": pipe, "cv_scores": cv_scores, "test_acc": test_acc},
+            model_path,
+        )
         print(f"[INFO] Saved => {model_path}")
     # Holdout tests après entraînement
     holdout_accs = []
     for e in exps:
         try:
             from joblib import load
+
             model_path = MODEL_DIR / f"bci_exp{e}.pkl"
             pipe = load(model_path)["model"]
             X_ho, y_ho, _ = _aggregate(holdout_dirs, e, data_dir)
@@ -250,44 +311,42 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
     elapsed = time.time() - start_time
     print(f"[INFO] Total execution time: {elapsed:.1f} seconds")
 
+
 # ────────────────── CLI ──────────────────
+
 
 def main():
     ap = argparse.ArgumentParser("Total Perspective Vortex – BCI")
+    ap.add_argument("data_path", type=Path, help="Local data root (containing S001/, S002/, etc.)")
     ap.add_argument("experiment", type=int, nargs="?", help="Exp id (0‑5)")
     ap.add_argument("subject", type=int, nargs="?", help="Subject id (1‑109)")
     ap.add_argument("mode", choices=["train", "predict", "stream"], nargs="?")
-    ap.add_argument("--data", type=Path, help="Local data root (S001/, ...)")
     ap.add_argument("--fast", action="store_true", help="Use 10 subjects only")
     args = ap.parse_args()
 
-    if args.data and not args.data.exists():
-        ap.error(f"Data dir {args.data} not found")
+    if not args.data_path.exists():
+        ap.error(f"Data dir {args.data_path} not found")
 
     # 1) train all / selected experiments (split)
     if args.experiment is None:
-        if not args.data:
-            ap.error("--data required for split training")
-        train_split(None, args.data, not args.fast)
+        train_split(None, args.data_path, not args.fast)
         return
 
     # 2) train split for one experiment
     if args.subject is None:
-        if not args.data:
-            ap.error("--data required for split training")
-        train_split(args.experiment, args.data, not args.fast)
+        train_split(args.experiment, args.data_path, not args.fast)
         return
 
     # 3) single subject actions
     if args.mode is None:
-        ap.error("Need a mode (train/predict/stream)")
+        ap.error("Need a mode (train/predict/stream) for single subject action")
 
     if args.mode == "train":
-        train_subject(args.experiment, args.subject, args.data)
+        train_subject(args.experiment, args.subject, args.data_path)
     elif args.mode == "predict":
-        predict_subject(args.experiment, args.subject, args.data, playback=True)
+        predict_subject(args.experiment, args.subject, args.data_path, playback=True)
     else:
-        stream_subject(args.experiment, args.subject, data_dir=args.data)
+        stream_subject(args.experiment, args.subject, args.data_path)
 
 
 if __name__ == "__main__":
