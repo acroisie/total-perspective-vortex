@@ -18,39 +18,34 @@ from sklearn.pipeline import Pipeline
 from filterbank_csp import FilterBankCSP
 from custom_csp import CustomCSP
 
-# ────────────────── mute the spam ──────────────────
 warnings.filterwarnings("ignore")
 for mod in ("mne", "joblib"):
     logging.getLogger(mod).setLevel(logging.ERROR)
     logging.getLogger(mod).propagate = False
 mne.set_log_level("ERROR")
 
-# ────────────────── constants ──────────────────
 FMIN, FMAX = 8.0, 32.0
 TMIN, TMAX = 0.7, 3.9
 SEED = 42
 FAST_SUBJECTS = 10
 PREDICT_DELAY = 0.1
-EEG_CHANNELS = ["C3", "C4", "Cz"]  # keep it simple
+EEG_CHANNELS = ["C3", "C4", "Cz"]
 N_CSP = 3
 USE_FILTERBANK = True
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
 
 EXPERIMENT_RUNS = {
-    0: [3, 7, 11], # left vs right hand
-    1: [4, 8, 12], # left vs right foot
-    2: [5, 9, 13], # right hand vs foot
-    3: [6, 10, 14], # right hand vs foot
-    4: [3, 4, 7, 8, 11, 12], # all left
-    5: [5, 6, 9, 10, 13, 14], # all right
+    0: [3, 7, 11],  # left vs right hand
+    1: [4, 8, 12],  # left vs right foot
+    2: [5, 9, 13],  # right hand vs foot
+    3: [6, 10, 14],  # right hand vs foot
+    4: [3, 4, 7, 8, 11, 12],  # all left
+    5: [5, 6, 9, 10, 13, 14],  # all right
 }
 
 
-# ────────────────── CSP wrapper ──────────────────
 class FBCSP(FilterBankCSP):
-    """Same API, just makes sure dtype is float64."""
-
     def fit(self, X, y):
         X = np.asarray(X, dtype=np.float64)
         self.csp_list = []
@@ -67,17 +62,12 @@ class FBCSP(FilterBankCSP):
 
 def make_pipe():
     if USE_FILTERBANK:
-        # print(f"Using FilterBankCSP with n_csp={N_CSP}, sfreq=160")
         return Pipeline(
             [("FBCSP", FBCSP(n_csp=N_CSP, sfreq=160)), ("LDA", LDA())]
         )
-    print(f"Using CustomCSP with n_components={N_CSP}")
     return Pipeline(
         [("CSP", CustomCSP(n_components=N_CSP, log=True)), ("LDA", LDA())]
     )
-
-
-# ────────────────── data loaders ──────────────────
 
 
 def _raw_from_files(exp: int, subj: int, root: Path):
@@ -105,9 +95,9 @@ def load_data(exp: int, subj: int, data_dir: Path):
     raw = _prep_raw(raw)
     events, _ = mne.events_from_annotations(raw, verbose=False)
 
-    if exp in {0, 1, 4}:  # left/right
+    if exp in {0, 1, 4}:
         event_id = {"left": 1, "right": 2}
-    else:  # hands/feet
+    else:
         event_id = {"hands": 2, "feet": 3}
 
     epochs = mne.Epochs(
@@ -128,9 +118,6 @@ def load_data(exp: int, subj: int, data_dir: Path):
     return X[:, :, :min_len], y
 
 
-# ────────────────── helpers ──────────────────
-
-
 def _pick_model(exp: int, subj: int | None = None):
     cands = [
         MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl" if subj else None,
@@ -146,9 +133,6 @@ def _pick_model(exp: int, subj: int | None = None):
 def _load_pipe(path: Path):
     data = joblib.load(path)
     return data["model"] if isinstance(data, dict) and "model" in data else data
-
-
-# ────────────────── core actions ──────────────────
 
 
 def predict_subject(
@@ -176,9 +160,7 @@ def predict_subject(
         report(preds, y)
 
 
-def stream_subject(
-    exp: int, subj: int, data_dir: Path, delay: float = 2.0
-):
+def stream_subject(exp: int, subj: int, data_dir: Path, delay: float = 2.0):
     model_path = _pick_model(exp, subj)
     pipe = _load_pipe(model_path)
     X, y = load_data(exp, subj, data_dir)
@@ -206,9 +188,6 @@ def report(preds, truth):
     print(f"Accuracy: {ok.mean():.4f}")
 
 
-# ────────────────── training ──────────────────
-
-
 def _cv(pipe, X, y):
     cv = StratifiedKFold(10, shuffle=True, random_state=SEED)
     scores = cross_val_score(pipe, X, y, cv=cv, n_jobs=-1)
@@ -225,9 +204,6 @@ def train_subject(exp: int, subj: int, data_dir: Path):
     model_path = MODEL_DIR / f"bci_exp{exp}_subj{subj:03d}.pkl"
     joblib.dump({"model": pipe, "cv_scores": scores}, model_path)
     print(f"Model saved to {model_path}")
-
-
-# Multi‑subject split (train/test/holdout)
 
 
 def _aggregate(subject_dirs, exp, data_dir):
@@ -285,7 +261,6 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
             model_path,
         )
         print(f"[INFO] Saved => {model_path}")
-    # Holdout tests après entraînement
     holdout_accs = []
     for e in exps:
         try:
@@ -299,7 +274,6 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
             print(f"[INFO] Holdout acc exp {e}: {hold_acc:.3f}")
         except Exception as err:
             print(f"[INFO] No holdout for exp {e}: {err}")
-    # Résumé holdout
     if holdout_accs:
         print("\n[INFO] Holdout accuracies by experiment:")
         for e, acc in holdout_accs:
@@ -312,12 +286,13 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
     print(f"[INFO] Total execution time: {elapsed:.1f} seconds")
 
 
-# ────────────────── CLI ──────────────────
-
-
 def main():
     ap = argparse.ArgumentParser("Total Perspective Vortex – BCI")
-    ap.add_argument("data_path", type=Path, help="Local data root (containing S001/, S002/, etc.)")
+    ap.add_argument(
+        "data_path",
+        type=Path,
+        help="Local data root (containing S001/, S002/, etc.)",
+    )
     ap.add_argument("experiment", type=int, nargs="?", help="Exp id (0‑5)")
     ap.add_argument("subject", type=int, nargs="?", help="Subject id (1‑109)")
     ap.add_argument("mode", choices=["train", "predict", "stream"], nargs="?")
@@ -327,24 +302,23 @@ def main():
     if not args.data_path.exists():
         ap.error(f"Data dir {args.data_path} not found")
 
-    # 1) train all / selected experiments (split)
     if args.experiment is None:
         train_split(None, args.data_path, not args.fast)
         return
 
-    # 2) train split for one experiment
     if args.subject is None:
         train_split(args.experiment, args.data_path, not args.fast)
         return
 
-    # 3) single subject actions
     if args.mode is None:
         ap.error("Need a mode (train/predict/stream) for single subject action")
 
     if args.mode == "train":
         train_subject(args.experiment, args.subject, args.data_path)
     elif args.mode == "predict":
-        predict_subject(args.experiment, args.subject, args.data_path, playback=True)
+        predict_subject(
+            args.experiment, args.subject, args.data_path, playback=True
+        )
     else:
         stream_subject(args.experiment, args.subject, args.data_path)
 
