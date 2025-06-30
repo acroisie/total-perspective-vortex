@@ -39,12 +39,12 @@ MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
 
 EXPERIMENT_RUNS = {
-    0: [3, 7, 11],
-    1: [4, 8, 12],
-    2: [5, 9, 13],
-    3: [6, 10, 14],
-    4: [3, 4, 7, 8, 11, 12],
-    5: [5, 6, 9, 10, 13, 14],
+    0: [3, 7, 11],  # left vs right hand
+    1: [4, 8, 12],  # left vs right foot
+    2: [5, 9, 13],  # right hand vs foot
+    3: [6, 10, 14],  # right hand vs foot
+    4: [3, 4, 7, 8, 11, 12],  # all left
+    5: [5, 6, 9, 10, 13, 14],  # all right
 }
 
 
