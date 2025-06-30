@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-
 from mne.channels import make_standard_montage
 from mne.datasets import eegbci
 from mne.io import concatenate_raws, read_raw_edf
@@ -51,7 +50,7 @@ def plot_mean_psd(raw, fmin=0, fmax=80, n_fft=2048):
 
 def main():
     subject = 1
-    runs = [6, 10, 14]  # left hand, right hand, feet
+    runs = [6, 10, 14]
     fmin, fmax = 7.0, 30.0
 
     print(f"Loading subject {subject}, runs {runs}...")
