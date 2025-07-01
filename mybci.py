@@ -31,10 +31,8 @@ FMIN, FMAX = 8.0, 32.0
 TMIN, TMAX = 0.7, 3.9
 SEED = 42
 FAST_SUBJECTS = 10
-PREDICT_DELAY = 0.1
 EEG_CHANNELS = ["C3", "C4", "Cz"]
 N_CSP = 3
-USE_FILTERBANK = True
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
 
@@ -48,32 +46,10 @@ EXPERIMENT_RUNS = {
 }
 
 
-class FBCSP(FilterBankCSP):
-    def fit(self, X, y):
-        X = np.asarray(X, dtype=np.float64)
-        self.csp_list = []
-        for fmin, fmax in self.freq_bands:
-            X_f = self._bandpass_filter(X, fmin, fmax)
-            csp = CustomCSP(n_components=self.n_csp, log=True)
-            csp.fit(X_f, y)
-            self.csp_list.append(csp)
-        return self
-
-    def transform(self, X):
-        return super().transform(np.asarray(X, dtype=np.float64))
-
-
 def make_pipe():
-    if USE_FILTERBANK:
-        return Pipeline(
-            [
-                ("FBCSP", FBCSP(n_csp=N_CSP, sfreq=160)),
-                ("LDA", LDA()),
-            ]
-        )
     return Pipeline(
         [
-            ("CSP", CustomCSP(n_components=N_CSP, log=True)),
+            ("FBCSP", FilterBankCSP(n_csp=N_CSP, sfreq=160)),
             ("LDA", LDA()),
         ]
     )
@@ -123,7 +99,7 @@ def load_data(exp: int, subj: int, data_dir: Path):
     )
     X = epochs.get_data().astype(np.float64)
     y = (epochs.events[:, 2] % 2).astype(int)
-    min_len = min(X.shape[2], *(e.shape[2] for e in [X]))
+    min_len = min(X.shape[2] for e in [X] if e.shape[0] > 0)
     return X[:, :, :min_len], y
 
 
@@ -144,27 +120,12 @@ def _load_pipe(path: Path):
     return data["model"] if isinstance(data, dict) and "model" in data else data
 
 
-def predict_subject(
-    exp: int, subj: int, data_dir: Path, playback: bool = False
-):
+def predict_subject(exp: int, subj: int, data_dir: Path):
     model_path = _pick_model(exp, subj)
     pipe = _load_pipe(model_path)
     X, y = load_data(exp, subj, data_dir)
-    if playback:
-        start = time.time()
-        ok = 0
-        print(f"epoch nb: [prediction] [truth] equal?")
-        for i, (e, t) in enumerate(zip(X, y)):
-            time.sleep(0.01)
-            pred = pipe.predict(e[None])[0]
-            ok += pred == t
-            print(
-                f"epoch {i:02d}: [{pred+1}] [{t+1}] {pred==t} (t={time.time()-start:.1f}s)"
-            )
-        print(f"Accuracy: {ok/len(y):.4f}")
-    else:
-        preds = pipe.predict(X)
-        report(preds, y)
+    preds = pipe.predict(X)
+    report(preds, y)
 
 
 def stream_subject(exp: int, subj: int, data_dir: Path, delay: float = 2.0):
@@ -268,10 +229,8 @@ def train_split(exp: int | None, data_dir: Path, full: bool):
     holdout_accs = []
     for e in exps:
         try:
-            from joblib import load
-
             model_path = MODEL_DIR / f"bci_exp{e}.pkl"
-            pipe = load(model_path)["model"]
+            pipe = joblib.load(model_path)["model"]
             X_ho, y_ho, _ = _aggregate(holdout_dirs, e, data_dir)
             hold_acc = pipe.score(X_ho, y_ho)
             holdout_accs.append((e, hold_acc))
@@ -320,9 +279,7 @@ def main():
     if args.mode == "train":
         train_subject(args.experiment, args.subject, args.data_path)
     elif args.mode == "predict":
-        predict_subject(
-            args.experiment, args.subject, args.data_path, playback=True
-        )
+        predict_subject(args.experiment, args.subject, args.data_path)
     else:
         stream_subject(args.experiment, args.subject, args.data_path)
 

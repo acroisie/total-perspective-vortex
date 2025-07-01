@@ -15,15 +15,17 @@ class FilterBankCSP(BaseEstimator, TransformerMixin):
         self.csp_list = []
 
     def fit(self, X, y):
+        X = np.asarray(X, dtype=np.float64)
         self.csp_list = []
         for fmin, fmax in self.freq_bands:
             X_f = self._bandpass_filter(X, fmin, fmax)
-            csp = CustomCSP(n_components=self.n_csp)
+            csp = CustomCSP(n_components=self.n_csp, log=True)
             csp.fit(X_f, y)
             self.csp_list.append(csp)
         return self
 
     def transform(self, X):
+        X = np.asarray(X, dtype=np.float64)
         features = []
         for idx, (fmin, fmax) in enumerate(self.freq_bands):
             X_f = self._bandpass_filter(X, fmin, fmax)

@@ -70,7 +70,6 @@ class CustomCSP(BaseEstimator, TransformerMixin):
         W = eigenvecs_comp @ np.diag(eigenvals_comp**-0.5) @ eigenvecs_comp.T
 
         C1_white = W @ C1 @ W.T
-        # C2_white = W @ C2 @ W.T
 
         eigenvals, eigenvecs = eigh(C1_white)
 
@@ -153,42 +152,3 @@ class CustomCSP(BaseEstimator, TransformerMixin):
         return self.filters_
 
 
-def test_custom_csp():
-    np.random.seed(42)
-    n_channels = 10
-    n_times = 100
-    n_trials_per_class = 20
-
-    X_class_0 = np.random.randn(n_trials_per_class, n_channels, n_times)
-    X_class_0[:, :3, :] *= 2
-
-    X_class_1 = np.random.randn(n_trials_per_class, n_channels, n_times)
-    X_class_1[:, -3:, :] *= 2
-
-    X = np.concatenate([X_class_0, X_class_1], axis=0)
-    y = np.concatenate(
-        [np.zeros(n_trials_per_class), np.ones(n_trials_per_class)]
-    )
-
-    csp = CustomCSP(n_components=4, log=True)
-    X_csp = csp.fit_transform(X, y)
-
-    class_0_features = X_csp[:n_trials_per_class]
-    class_1_features = X_csp[n_trials_per_class:]
-
-    mean_0 = np.mean(class_0_features, axis=0)
-    mean_1 = np.mean(class_1_features, axis=0)
-
-    print(f"Input shape: {X.shape}")
-    print(f"Output shape: {X_csp.shape}")
-    print(f"Spatial filters shape: {csp.filters_.shape}")
-    print(f"Spatial patterns shape: {csp.patterns_.shape}")
-    print(f"Eigenvalues: {csp.eigenvalues_}")
-    print(f"Class 0 mean features: {mean_0}")
-    print(f"Class 1 mean features: {mean_1}")
-    print(f"Feature difference: {np.abs(mean_1 - mean_0)}")
-    print("Custom CSP test completed successfully!")
-
-
-if __name__ == "__main__":
-    test_custom_csp()
