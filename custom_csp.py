@@ -150,5 +150,3 @@ class CustomCSP(BaseEstimator, TransformerMixin):
             raise ValueError("CSP must be fitted before getting filters")
 
         return self.filters_
-
-

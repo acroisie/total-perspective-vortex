@@ -128,7 +128,7 @@ def predict_subject(exp: int, subj: int, data_dir: Path):
     report(preds, y)
 
 
-def stream_subject(exp: int, subj: int, data_dir: Path, delay: float = 2.0):
+def stream_subject(exp: int, subj: int, data_dir: Path, delay: float = 0.5):
     model_path = _pick_model(exp, subj)
     pipe = _load_pipe(model_path)
     X, y = load_data(exp, subj, data_dir)
